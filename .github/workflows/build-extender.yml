@@ -85,6 +85,7 @@ jobs:
           msbuild ".\SymbolTableGenerator\SymbolTableGenerator.vcxproj"
           "/p:Configuration=Release"
           "/p:Platform=x64"
+          "/p:PlatformToolset=v143"
           /t:Build
           /m
           /nologo
@@ -97,6 +98,7 @@ jobs:
           msbuild ".\BG3Tools.sln"
           "/p:Configuration=Release"
           "/p:Platform=x64"
+          "/p:PlatformToolset=v143"
           /t:Clean,Build
           /m
           /nologo
@@ -114,6 +116,7 @@ jobs:
           msbuild ".\BG3Tools.sln"
           "/p:Configuration=Game Release"
           "/p:Platform=x64"
+          "/p:PlatformToolset=v143"
           "/p:PreBuildEventUseInBuild=false"
           /t:BG3Extender
           /m
