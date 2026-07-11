@@ -462,7 +462,7 @@ Ext.Events.GameStateChanged:Subscribe(handler, {
 })
 ```
 
-The `Priority` setting determines the order in which subscribers are called; subscribers with lower priority are called first. The default priority is 100.
+The `Priority` setting determines the order in which subscribers are called; subscribers with higher priority are called first. The default priority is 100.
 If the `Once` flag is set, the event is only triggered once and the handler is automatically unsubscribed after the first call.
 
 The `Subscribe()` method returns a handler index that can be used to cancel the subscription later on:
