@@ -9,6 +9,8 @@
 #include <backends/imgui_impl_vulkan.h>
 #include <imgui_internal.h>
 #include <unordered_map>
+#include <vector>
+#include <psapi.h>
 
 #ifndef NVSDK_CONV
 #ifdef __GNUC__
@@ -917,20 +919,45 @@ private:
         // Call original first so NGX completes its work and final image state
         NVSDK_NGX_Result evalRes = orig(InCmdList, InFeatureHandle, InParameters, InCallback);
 
+        if (!ngxHookEnteredLogged_) {
+            ngxHookEnteredLogged_ = true;
+            INFO("IMGUI: NGX EvaluateFeature hook is live");
+        }
+
         if (!initialized_ || !menuVisible_ || evalRes != NVSDK_NGX_Result_Success || !InCmdList || !InParameters)
             return evalRes;
 
+        // Resolve lazily and keep retrying until found - the providing module may not be loaded
+        // yet the first time we get here, and caching a null would disable the overlay for good.
+        if (ngxGetVoidPointer_ == nullptr) {
+            forEachNgxCandidateModule([this](HMODULE mod, wchar_t const* label) {
+                auto proc = reinterpret_cast<PFN_NVSDK_NGX_Parameter_GetVoidPointer>(
+                    GetProcAddress(mod, "NVSDK_NGX_Parameter_GetVoidPointer"));
+                if (proc == nullptr) return false;
+                ngxGetVoidPointer_ = proc;
+                INFO("IMGUI: resolved NVSDK_NGX_Parameter_GetVoidPointer in %S", label);
+                return true;
+            });
+        }
+
+        if (ngxGetVoidPointer_ == nullptr) {
+            if (!ngxOutputUnavailableLogged_) {
+                ngxOutputUnavailableLogged_ = true;
+                ERR("IMGUI: NVSDK_NGX_Parameter_GetVoidPointer not exported by any loaded module; "
+                    "cannot read the NGX output image");
+            }
+            return evalRes;
+        }
+
         // Extract NGX output resource as a Vulkan image view
         void* outPtr = nullptr;
-        static PFN_NVSDK_NGX_Parameter_GetVoidPointer pGetVoidPtr = []() -> PFN_NVSDK_NGX_Parameter_GetVoidPointer {
-            HMODULE mod = GetModuleHandleW(L"sl.interposer.dll");
-            if (!mod) mod = GetModuleHandleW(L"nvngx_dlss.dll");
-            if (!mod) mod = GetModuleHandleW(L"nvngx.dll");
-            if (!mod) return nullptr;
-            return reinterpret_cast<PFN_NVSDK_NGX_Parameter_GetVoidPointer>(GetProcAddress(mod, "NVSDK_NGX_Parameter_GetVoidPointer"));
-        }();
-        if (!pGetVoidPtr || pGetVoidPtr(const_cast<NVSDK_NGX_Parameter*>(InParameters), NVSDK_NGX_Parameter_Output, &outPtr) != NVSDK_NGX_Result_Success || !outPtr)
+        if (ngxGetVoidPointer_(const_cast<NVSDK_NGX_Parameter*>(InParameters), NVSDK_NGX_Parameter_Output, &outPtr) != NVSDK_NGX_Result_Success || !outPtr) {
+            if (!ngxNoOutputResourceLogged_) {
+                ngxNoOutputResourceLogged_ = true;
+                ERR("IMGUI: NGX parameter block has no '%s' output resource", NVSDK_NGX_Parameter_Output);
+            }
             return evalRes;
+        }
 
         auto* outResVK = reinterpret_cast<NVSDK_NGX_Resource_VK*>(outPtr);
         const NVSDK_NGX_ImageViewInfo_VK& iv = outResVK->Resource.ImageViewInfo;
@@ -1034,8 +1061,14 @@ private:
         rpBegin.renderArea.extent = { targetW, targetH };
 
         vkCmdBeginRenderPass(InCmdList, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
-        (void)injectImGuiIntoCommandBuffer(InCmdList);
+        auto drawn = injectImGuiIntoCommandBuffer(InCmdList);
         vkCmdEndRenderPass(InCmdList);
+
+        if (drawn && !ngxOverlayDrawnLogged_) {
+            ngxOverlayDrawnLogged_ = true;
+            INFO("IMGUI: drawing overlay into NGX output (%dx%d, format %d)",
+                (int)targetW, (int)targetH, (int)targetFormat);
+        }
 
         // Transition back to GENERAL so downstream consumers can read
         VkImageMemoryBarrier toGeneral = toColor;
@@ -1067,27 +1100,89 @@ private:
         return true;
     }
 
+    bool installNgxHookFrom(HMODULE mod, wchar_t const* label)
+    {
+        // The C++ and _C entry points take the same argument layout; they differ only in the
+        // callback type, which we forward untouched. Prefer _C, but accept either.
+        static char const* const symbols[] = {
+            "NVSDK_NGX_VULKAN_EvaluateFeature_C",
+            "NVSDK_NGX_VULKAN_EvaluateFeature"
+        };
+
+        for (auto symbol : symbols) {
+            auto proc = GetProcAddress(mod, symbol);
+            if (!proc) continue;
+
+            DetourTransactionBegin();
+            DetourUpdateThread(GetCurrentThread());
+            ngxEvaluateFeatureHook_.Wrap(ResolveFunctionTrampoline(
+                reinterpret_cast<NgxEvaluateFeatureCHookType::BaseFuncType*>(proc)));
+            DetourTransactionCommit();
+            ngxEvaluateFeatureHook_.SetWrapper(&VulkanBackend::ngxEvaluateFeatureCHook, this);
+            INFO("IMGUI: hooked %s in %S", symbol, label);
+            return true;
+        }
+
+        return false;
+    }
+
+    // Which module provides the NGX entry points moves between Streamline and NGX versions - and
+    // between upscaler mods - so try the usual providers by name and then fall back to scanning
+    // every loaded module. Calls fn(module, label) until it returns true.
+    template <class Fn>
+    static bool forEachNgxCandidateModule(Fn&& fn)
+    {
+        static wchar_t const* const knownModules[] = {
+            L"sl.interposer.dll",
+            L"sl.dlss.dll",
+            L"sl.dlss_g.dll",
+            L"nvngx_dlss.dll",
+            L"nvngx.dll",
+            L"_nvngx.dll"
+        };
+
+        for (auto name : knownModules) {
+            auto mod = GetModuleHandleW(name);
+            if (mod != nullptr && fn(mod, name)) return true;
+        }
+
+        DWORD needed{ 0 };
+        if (!EnumProcessModules(GetCurrentProcess(), nullptr, 0, &needed)) return false;
+
+        std::vector<HMODULE> mods(needed / sizeof(HMODULE));
+        if (!EnumProcessModules(GetCurrentProcess(), mods.data(),
+            (DWORD)(mods.size() * sizeof(HMODULE)), &needed)) return false;
+
+        for (auto mod : mods) {
+            wchar_t path[MAX_PATH]{};
+            if (GetModuleFileNameW(mod, path, MAX_PATH) == 0) continue;
+            if (fn(mod, static_cast<wchar_t const*>(path))) return true;
+        }
+
+        return false;
+    }
+
     void tryInstallNgxEvaluateFeatureHook()
     {
         if (ngxEvaluateFeatureHook_.IsWrapped()) return;
 
-        auto tryInstallFrom = [&](LPCWSTR modName) -> bool {
-            HMODULE mod = GetModuleHandleW(modName);
-            if (!mod) return false;
-            auto pC = reinterpret_cast<NgxEvaluateFeatureCHookType::BaseFuncType*>(
-                GetProcAddress(mod, "NVSDK_NGX_VULKAN_EvaluateFeature_C"));
-            if (!pC) return false;
-            DetourTransactionBegin();
-            DetourUpdateThread(GetCurrentThread());
-            ngxEvaluateFeatureHook_.Wrap(ResolveFunctionTrampoline(pC));
-            DetourTransactionCommit();
-            ngxEvaluateFeatureHook_.SetWrapper(&VulkanBackend::ngxEvaluateFeatureCHook, this);
-            return true;
-        };
+        // NGX modules load lazily, so this has to keep retrying, but enumerating the module
+        // list every frame is wasteful - probe periodically instead.
+        if (ngxProbeDelay_ > 0) {
+            ngxProbeDelay_--;
+            return;
+        }
+        ngxProbeDelay_ = NgxProbeInterval;
 
-        if (tryInstallFrom(L"sl.interposer.dll")) return;
-        if (tryInstallFrom(L"nvngx_dlss.dll")) return;
-        if (tryInstallFrom(L"nvngx.dll")) return;
+        if (forEachNgxCandidateModule([this](HMODULE mod, wchar_t const* label) {
+            return installNgxHookFrom(mod, label);
+        })) return;
+
+        if (!ngxProbeFailureLogged_) {
+            ngxProbeFailureLogged_ = true;
+            ERR("IMGUI: NVSDK_NGX_VULKAN_EvaluateFeature is not exported by any loaded module; "
+                "the overlay will stay hidden while upscaling is active");
+        }
     }
 
     IMGUIManager& ui_;
@@ -1128,6 +1223,17 @@ private:
     HMODULE sl_{ nullptr };
     PFN_vkQueuePresentKHR dlssgPresentFunction_{ nullptr };
     PFN_vkCreateSwapchainKHR dlssgCreateSwapchainKHR_{ nullptr };
+
+    // Frames between attempts to locate the NGX EvaluateFeature entry point.
+    static constexpr unsigned NgxProbeInterval{ 120 };
+    unsigned ngxProbeDelay_{ 0 };
+    PFN_NVSDK_NGX_Parameter_GetVoidPointer ngxGetVoidPointer_{ nullptr };
+    // One-shot latches so the per-frame paths below report once instead of every frame.
+    bool ngxProbeFailureLogged_{ false };
+    bool ngxHookEnteredLogged_{ false };
+    bool ngxOutputUnavailableLogged_{ false };
+    bool ngxNoOutputResourceLogged_{ false };
+    bool ngxOverlayDrawnLogged_{ false };
 
     SwapchainInfo swapchain_;
     uint32_t textures_{ 0 };
