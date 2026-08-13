@@ -79,13 +79,28 @@ jobs:
           /verbosity:quiet
           /consoleloggerparameters:summary
 
+      - name: Probe toolchain (ATL headers, toolsets)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Write-Host "--- atlbase.h locations ---"
+          Get-ChildItem 'C:\Program Files\Microsoft Visual Studio' -Recurse -Filter atlbase.h -ErrorAction SilentlyContinue |
+            Select-Object -First 10 -ExpandProperty FullName
+          Write-Host "--- installed MSVC toolsets ---"
+          Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\MSVC' -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName
+          Write-Host "--- available PlatformToolsets ---"
+          Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\*\*\MSBuild\Microsoft\VC\*' -Directory -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Name
+          Write-Host "--- INCLUDE ---"
+          $env:INCLUDE -split ';' | ForEach-Object { Write-Host "  $_" }
+
       - name: Build SymbolTableGenerator.vcxproj (Release x64)
         shell: pwsh
         run: >
           msbuild ".\SymbolTableGenerator\SymbolTableGenerator.vcxproj"
           "/p:Configuration=Release"
           "/p:Platform=x64"
-          "/p:PlatformToolset=v143"
           /t:Build
           /m
           /nologo
@@ -98,7 +113,6 @@ jobs:
           msbuild ".\BG3Tools.sln"
           "/p:Configuration=Release"
           "/p:Platform=x64"
-          "/p:PlatformToolset=v143"
           /t:Clean,Build
           /m
           /nologo
@@ -116,7 +130,6 @@ jobs:
           msbuild ".\BG3Tools.sln"
           "/p:Configuration=Game Release"
           "/p:Platform=x64"
-          "/p:PlatformToolset=v143"
           "/p:PreBuildEventUseInBuild=false"
           /t:BG3Extender
           /m
