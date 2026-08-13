@@ -508,6 +508,31 @@ private:
         PFN_vkQueuePresentKHR gameQueuePresentKHR = reinterpret_cast<PFN_vkQueuePresentKHR>(
             vkGetDeviceProcAddr(*pDevice, "vkQueuePresentKHR"));
 
+        // Streamline loads as part of the game's Vulkan init, so it is normally not present yet
+        // when EnableHooks() runs; the LoadLibraryW() there also only succeeds if the upscaler
+        // ships sl.interposer.dll somewhere on the DLL search path. Resolve again here, where it
+        // is loaded and GetModuleHandleW finds it whatever folder it came from. Without this we
+        // silently fall back to the game's own entry points, bypassing Streamline's swapchain
+        // proxy - DLSS upscaling still works, but frame generation never gets injected.
+        if (sl_ == nullptr) {
+            sl_ = GetModuleHandleW(L"sl.interposer.dll");
+            if (sl_ != nullptr) {
+                dlssgPresentFunction_ = reinterpret_cast<PFN_vkQueuePresentKHR>(
+                    GetProcAddress(sl_, "vkQueuePresentKHR"));
+                dlssgCreateSwapchainKHR_ = reinterpret_cast<PFN_vkCreateSwapchainKHR>(
+                    GetProcAddress(sl_, "vkCreateSwapchainKHR"));
+            }
+        }
+
+        if (dlssgPresentFunction_ != nullptr && dlssgCreateSwapchainKHR_ != nullptr) {
+            INFO("IMGUI: chaining present/swapchain through sl.interposer.dll");
+        } else {
+            WARN("IMGUI: sl.interposer.dll not available at device creation (handle %p, present %p, "
+                "createSwapchain %p); hooking the game's entry points directly - DLSS frame "
+                "generation will not be injected",
+                sl_, dlssgPresentFunction_, dlssgCreateSwapchainKHR_);
+        }
+
         PFN_vkQueuePresentKHR nextPresent = dlssgPresentFunction_ ? dlssgPresentFunction_ : gameQueuePresentKHR;
         PFN_vkCreateSwapchainKHR nextCreateSwapchain = dlssgCreateSwapchainKHR_ ? dlssgCreateSwapchainKHR_ : gameCreateSwapchainKHR;
 
