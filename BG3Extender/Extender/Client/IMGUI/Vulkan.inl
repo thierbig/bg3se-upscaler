@@ -956,6 +956,20 @@ private:
         if (!initialized_ || !menuVisible_ || evalRes != NVSDK_NGX_Result_Success || !InCmdList || !InParameters)
             return evalRes;
 
+        // Everything below touches state shared with NewFrame()/FinishFrame()/the present hook -
+        // the render pass, framebuffer and pipeline caches, and viewports_[drawViewport_]. This
+        // callback runs on the game's render thread with no synchronisation of its own, so take
+        // the same lock those paths use. Without it, concurrent inserts corrupt the caches; the
+        // observable symptom was the overlay pipeline being built twice for one format, followed
+        // by crashes and hangs whose timing wandered from frame to frame.
+        //
+        // The lock is taken after orig() so NGX's own work is never serialised against us.
+        std::lock_guard _(globalResourceLock_);
+
+        // Re-check under the lock, since the backend may have been torn down while we waited.
+        if (!initialized_ || drawViewport_ < 0)
+            return evalRes;
+
         // Resolve lazily and keep retrying until found - the providing module may not be loaded
         // yet the first time we get here, and caching a null would disable the overlay for good.
         if (ngxGetVoidPointer_ == nullptr) {
