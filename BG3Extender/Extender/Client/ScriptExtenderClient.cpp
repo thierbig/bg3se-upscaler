@@ -168,7 +168,7 @@ void ScriptExtender::OnGameStateChanged(GameState fromState, GameState toState)
 
 #if defined(DEBUG_SERVER_CLIENT)
     DEBUG("ecl::ScriptExtender::OnGameStateChanged(): %s -> %s", 
-        GameStateNames[(unsigned)fromState], ClientGameStateNames[(unsigned)toState]);
+        GameStateNames[(unsigned)fromState], GameStateNames[(unsigned)toState]);
 #endif
 
     if (fromState != GameState::Unknown) {
@@ -209,6 +209,7 @@ void ScriptExtender::OnGameStateChanged(GameState fromState, GameState toState)
 
     switch (toState) {
     case GameState::Init:
+        entityHelpers_.Bind();
         ResetExtensionState();
         break;
 
@@ -224,12 +225,19 @@ void ScriptExtender::OnGameStateChanged(GameState fromState, GameState toState)
         break;
 
     case GameState::Menu:
-        #if defined(SE_IS_DEVELOPER_BUILD) && defined(NDEBUG)
-        if (!gExtender->GetConfig().DeveloperMode) {
-            gExtender->GetLibraryManager().ShowStartupError("This is an experimental version of the Script Extender meant for development use; things may frequently break here. It is recommended to switch back to the Release version unless you know what you are doing!", false, false);
+    {
+        auto error = gExtender->GetUpdaterAPI().GetDisplayError();
+        if (error) {
+            gExtender->GetLibraryManager().ShowStartupError(STDString(*error), false, false);
+        } else {
+            #if defined(SE_IS_DEVELOPER_BUILD) && defined(NDEBUG)
+            if (!gExtender->GetConfig().DeveloperMode) {
+                gExtender->GetLibraryManager().ShowStartupError("This is an experimental version of the Script Extender meant for development use; things may frequently break here. It is recommended to switch back to the Release version unless you know what you are doing!", false, false);
+            }
+            #endif
         }
-        #endif
         break;
+    }
 
     case GameState::LoadModule:
         gExtender->InitRuntimeLogging();

@@ -6,13 +6,13 @@
 
 BEGIN_SE()
 
-CachedResource::CachedResource(std::wstring const& cachePath, Manifest::Resource const& resource, Manifest::ResourceVersion const& version)
-    : cachePath_(cachePath), resource_(resource), version_(version)
+CachedResource::CachedResource(std::wstring const& cachePath, std::string const& resourceName, Manifest::ResourceVersion const& version)
+    : cachePath_(cachePath), resourceName_(resourceName), version_(version)
 {}
 
 std::wstring CachedResource::GetResourceLocalPath() const
 {
-    return cachePath_ + L"\\" + FromStdUTF8(resource_.Name);
+    return cachePath_ + L"\\" + FromStdUTF8(resourceName_);
 }
 
 std::wstring CachedResource::TryCreateLocalResourceCacheDirectory()
@@ -40,7 +40,7 @@ std::wstring CachedResource::TryCreateLocalCacheDirectory()
     return path;
 }
 
-bool CachedResource::UpdateLocalPackage(std::vector<uint8_t> const& contents, std::string& reason)
+OperationResult CachedResource::UpdateLocalPackage(std::string_view contents)
 {
     TryCreateLocalResourceCacheDirectory();
     auto packagePath = GetLocalPackagePath();
@@ -50,40 +50,35 @@ bool CachedResource::UpdateLocalPackage(std::vector<uint8_t> const& contents, st
     // The shell Zip API won't tell us if it failed to overwrite one of the files, so we need to 
     // check beforehand that the files are writeable.
     if (!AreDllsWriteable()) {
-        return false;
+        return ErrorReason{ ErrorCategory::LocalUpdate, std::string("File not writeable: ") + ToStdUTF8(GetAppDllPath()) };
     }
 
     auto tempPath = packagePath + L".tmp";
     if (!SaveFile(tempPath, contents)) {
         DEBUG("Unable to write package temp file: %s", ToStdUTF8(tempPath).c_str());
-        reason = "Script Extender update failed:\r\n";
-        reason += std::string("Failed to write file ") + ToStdUTF8(tempPath);
-        return false;
+        return ErrorReason{ ErrorCategory::LocalUpdate, std::string("Failed to write package temp file: ") + ToStdUTF8(tempPath) };
     }
 
+    std::string reason;
     if (!CryptoUtils::VerifySignedFile(tempPath, reason)) {
         DEBUG("Unable to verify package signature: %s", reason.c_str());
-        return false;
+        return ErrorReason{ ErrorCategory::LocalUpdate, reason };
     }
 
     if (!MoveFileExW(tempPath.c_str(), packagePath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
         DEBUG("Failed to move package file %s", packagePath.c_str());
-        reason = "Script Extender update failed:\r\n";
-        reason += std::string("Failed to move file ") + ToStdUTF8(packagePath);
-        return false;
+        return ErrorReason{ ErrorCategory::LocalUpdate, std::string("Failed to move package file: ") + ToStdUTF8(packagePath) };
     }
 
-
-    std::string unzipReason;
     auto cachePath = TryCreateLocalCacheDirectory();
     DEBUG("Unpacking update to %s", ToStdUTF8(cachePath).c_str());
-    if (UnzipPackage(packagePath, cachePath, reason)) {
-        return true;
-    } else {
+    auto result = UnzipPackage(packagePath, cachePath);
+    if (!result) {
         DEBUG("Unzipping failed: %s", reason.c_str());
         DeleteFileW(packagePath.c_str());
-        return false;
     }
+
+    return result;
 }
 
 bool CachedResource::RemoveLocalPackage()
@@ -128,65 +123,67 @@ bool CachedResource::AreDllsWriteable()
     return true;
 }
 
-bool CachedResource::UnzipPackage(std::wstring const& zipPath, std::wstring const& resourcePath, std::string& reason)
+OperationResult UnzipFile(ZipArchive::Ptr& archive, ZipArchiveEntry::Ptr& entry, std::wstring const& outputPath)
+{
+    DEBUG("Extracting: %s", entry->GetFullName().c_str());
+
+    auto tempPath = outputPath + L".tmp";
+    std::ofstream f(tempPath.c_str(), std::ios::out | std::ios::binary);
+    if (!f.good()) {
+        DEBUG("Failed to open %s for extraction", entry->GetFullName().c_str());
+        return ErrorReason{ ErrorCategory::LocalUpdate, std::string("Failed to open file ") + entry->GetFullName() + " for extraction" };
+    }
+
+    auto stream = entry->GetDecompressionStream();
+    if (!stream) {
+        DEBUG("Failed to decompress %s", entry->GetFullName().c_str());
+        return ErrorReason{ ErrorCategory::LocalUpdate, std::string("Failed to decompress file: ") + entry->GetFullName() };
+    }
+
+    auto len = entry->GetSize();
+
+    char buf[4096];
+    while (len) {
+        auto chunkSize = std::min(len, std::size(buf));
+        stream->read(buf, chunkSize);
+        f.write(buf, chunkSize);
+        len -= chunkSize;
+    }
+
+    entry->CloseDecompressionStream();
+    f.close();
+
+    if (!MoveFileExW(tempPath.c_str(), outputPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        DEBUG("Failed to move file %s", entry->GetFullName().c_str());
+        DeleteFileW(tempPath.c_str());
+        return ErrorReason{ ErrorCategory::LocalUpdate, std::string("Failed to move extracted file: ") + entry->GetFullName() };
+    }
+
+    return OperationSuccessful{};
+}
+
+OperationResult CachedResource::UnzipPackage(std::wstring const& zipPath, std::wstring const& resourcePath)
 {
     auto archive = ZipFile::Open(zipPath);
     if (!archive) {
-        reason = "Script Extender update failed:\r\nUnable to open update package, file possibly corrupted?";
-        return false;
+        return ErrorReason{ ErrorCategory::LocalUpdate, "Unable to read update package, file possibly corrupted?" };
     }
 
-    bool failed{ false };
+    OperationResult fileResult{ OperationSuccessful{} };
 
     auto entries = archive->GetEntriesCount();
     for (auto i = 0; i < entries; i++) {
         auto entry = archive->GetEntry(i);
-
         DEBUG("Extracting: %s", entry->GetFullName().c_str());
 
         auto outPath = resourcePath + L"\\" + FromStdUTF8(entry->GetFullName());
-        auto tempPath = resourcePath + L"\\extract.tmp";
-        std::ofstream f(tempPath.c_str(), std::ios::out | std::ios::binary);
-        if (!f.good()) {
-            DEBUG("Failed to open %s for extraction", entry->GetFullName().c_str());
-            reason = "Script Extender update failed:\r\n";
-            reason += std::string("Failed to open file ") + entry->GetFullName() + " for extraction";
-            failed = true;
-            break;
-        }
-
-        auto stream = entry->GetDecompressionStream();
-        if (!stream) {
-            DEBUG("Failed to decompress %s", entry->GetFullName().c_str());
-            reason = "Script Extender update failed:\r\n";
-            reason += std::string("Failed to decompress file ") + entry->GetFullName();
-            failed = true;
-            break;
-        }
-
-        auto len = entry->GetSize();
-
-        char buf[4096];
-        while (len) {
-            auto chunkSize = std::min(len, std::size(buf));
-            stream->read(buf, chunkSize);
-            f.write(buf, chunkSize);
-            len -= chunkSize;
-        }
-
-        entry->CloseDecompressionStream();
-        f.close();
-
-        if (!MoveFileExW(tempPath.c_str(), outPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-            DEBUG("Failed to move file %s", entry->GetFullName().c_str());
-            reason = "Script Extender update failed:\r\n";
-            reason += std::string("Failed to update file ") + entry->GetFullName();
-            failed = true;
+        fileResult = UnzipFile(archive, entry, outPath);
+        if (!fileResult) {
             break;
         }
     }
 
-    if (failed) {
+    if (!fileResult) {
         auto entries = archive->GetEntriesCount();
         for (auto i = 0; i < entries; i++) {
             auto entry = archive->GetEntry(i);
@@ -196,7 +193,7 @@ bool CachedResource::UnzipPackage(std::wstring const& zipPath, std::wstring cons
         }
     }
 
-    return !failed;
+    return fileResult;
 }
 
 bool CachedResource::DeleteLocalCacheFromZip(std::wstring const& zipPath, std::wstring const& resourcePath)
@@ -224,7 +221,9 @@ ResourceCacheRepository::ResourceCacheRepository(UpdaterConfig const& config, st
     : config_(config), path_(path)
 {
     DEBUG("ResourceCache path: %s", ToStdUTF8(path).c_str());
-    LoadManifest(GetCachedManifestPath());
+    if (!LoadManifest(GetCachedManifestPath())) {
+        manifestDirty_ = true;
+    }
 }
 
 std::wstring ResourceCacheRepository::GetCachedManifestPath() const
@@ -237,26 +236,36 @@ Manifest const& ResourceCacheRepository::GetManifest() const
     return manifest_;
 }
 
-bool ResourceCacheRepository::LoadManifest(std::wstring const& path)
+OperationResult ResourceCacheRepository::LoadManifest(std::wstring const& path)
 {
     std::string manifestText;
     DEBUG("Loading cache manifest: %s", ToStdUTF8(path).c_str());
     if (LoadFile(path, manifestText)) {
         ManifestSerializer parser;
         std::string parseError;
-        auto result = parser.Parse(manifestText, manifest_, parseError);
-        if (result == ManifestParseResult::Successful) {
+        auto result = parser.Parse(manifestText, manifest_);
+        if (result) {
             DEBUG("Cache manifest load OK.");
-            return true;
         } else {
-            DEBUG("Cache manifest parse failed: %d", result);
+            DEBUG("Cache manifest parse failed: %s", result.error().Message.c_str());
             manifest_.Resources.clear();
-            return false;
         }
+
+        return result;
     }
 
     DEBUG("Cache manifest load failed.");
-    return false;
+    return ErrorReason{ ErrorCategory::LocalUpdate, std::string("Failed to load manifest file: ") + ToStdUTF8(path) };
+}
+
+bool ResourceCacheRepository::SaveManifestIfNecessary()
+{
+    if (manifestDirty_) {
+        DEBUG("SaveManifestIfNecessary(): Manifest requires rewrite");
+        return SaveManifest(GetCachedManifestPath());
+    } else {
+        return true;
+    }
 }
 
 bool ResourceCacheRepository::SaveManifest(std::wstring const& path)
@@ -268,10 +277,15 @@ bool ResourceCacheRepository::SaveManifest(std::wstring const& path)
     std::string manifestText = parser.Stringify(manifest_);
 
     DEBUG("Saving cache manifest: %s", ToStdUTF8(path).c_str());
-    return SaveFile(path, manifestText);
+    if (SaveFile(path, manifestText)) {
+        manifestDirty_ = false;
+        return true;
+    } else {
+        return false;
+    }
 }
 
-bool ResourceCacheRepository::ResourceExists(std::string const& name, Manifest::ResourceVersion const& version) const
+bool ResourceCacheRepository::LocalResourceExists(std::string const& name, Manifest::ResourceVersion const& version) const
 {
     auto resource = manifest_.Resources.find(name);
     if (resource == manifest_.Resources.end()) {
@@ -286,22 +300,19 @@ bool ResourceCacheRepository::ResourceExists(std::string const& name, Manifest::
     return HasLocalCopy(resource->second, found->second);
 }
 
-bool ResourceCacheRepository::UpdateLocalPackage(Manifest::Resource const& resource, Manifest::ResourceVersion const& version, std::vector<uint8_t> const& contents, std::string& reason)
+OperationResult ResourceCacheRepository::UpdateLocalPackage(Manifest::Resource const& resource, Manifest::ResourceVersion const& version, std::string_view contents)
 {
     DEBUG("Updating local copy of resource %s, digest %s", resource.Name.c_str(), version.Digest.c_str());
-    CachedResource res(path_, resource, version);
-    if (res.UpdateLocalPackage(contents, reason)) {
+    CachedResource res(path_, resource.Name, version);
+    auto result = res.UpdateLocalPackage(contents);
+    if (result) {
         AddResourceToManifest(resource, version);
-        if (!SaveManifest(GetCachedManifestPath())) {
-            reason = "Script Extender update failed:\r\n";
-            reason += std::string("Failed to write manifest file ") + ToStdUTF8(GetCachedManifestPath());
-            return false;
-        } else {
-            return true;
+        if (!SaveManifestIfNecessary()) {
+            result = ErrorReason{ ErrorCategory::LocalUpdate, std::string("Failed to write manifest file: ") + ToStdUTF8(GetCachedManifestPath()) };
         }
-    } else {
-        return false;
     }
+
+    return result;
 }
 
 void ResourceCacheRepository::UpdateFromManifest(Manifest const& manifest)
@@ -320,8 +331,14 @@ void ResourceCacheRepository::UpdateFromManifest(Manifest const& manifest)
         return;
     }
 
+    // Only delete from local cache when reading a full manifest; this prevents the local cache from being cleared
+    // each time the embedded manifest is synced.
+    if (manifest.Partial) {
+        return;
+    }
+
     // Remove all resource versions that are cached locally but are not present in the manifest
-    std::vector<std::pair< Manifest::Resource const*, Manifest::ResourceVersion const*>> removals;
+    std::vector<std::pair<Manifest::Resource const*, Manifest::ResourceVersion const*>> removals;
     for (auto const& res : manifest_.Resources) {
         for (auto const& ver : res.second.ResourceVersions) {
             auto resIt = manifest.Resources.find(res.second.Name);
@@ -339,7 +356,7 @@ void ResourceCacheRepository::UpdateFromManifest(Manifest const& manifest)
     }
 
     for (auto const& removal : removals) {
-        RemoveResource(*removal.first, *removal.second);
+        RemoveLocalResource(*removal.first, *removal.second);
     }
 }
 
@@ -356,15 +373,26 @@ bool ResourceCacheRepository::UpdateFromLatestMetadata(Manifest::Resource const&
     }
 
     if (version.Revoked) {
-        RemoveResource(resource, version);
+        RemoveLocalResource(resource, version);
     } else {
+        // Allow retroactive correction of various publishing attributes
+        if (verIt->second.Version != version.Version
+            || verIt->second.MinGameVersion != version.MinGameVersion
+            || verIt->second.MaxGameVersion != version.MaxGameVersion
+            || verIt->second.Notice != version.Notice) {
+            manifestDirty_ = true;
+        }
+
+        verIt->second.Version = version.Version;
+        verIt->second.MinGameVersion = version.MinGameVersion;
+        verIt->second.MaxGameVersion = version.MaxGameVersion;
         verIt->second.Notice = version.Notice;
     }
 
     return true;
 }
 
-bool ResourceCacheRepository::RemoveResource(Manifest::Resource const& resource, Manifest::ResourceVersion const& version)
+bool ResourceCacheRepository::RemoveLocalResource(Manifest::Resource const& resource, Manifest::ResourceVersion const& version)
 {
     auto resIt = manifest_.Resources.find(resource.Name);
     if (resIt == manifest_.Resources.end()) {
@@ -378,57 +406,28 @@ bool ResourceCacheRepository::RemoveResource(Manifest::Resource const& resource,
 
     DEBUG("Removing local copy of resource %s, digest %s", resource.Name.c_str(), version.Digest.c_str());
 
-    CachedResource res(path_, resource, version);
+    CachedResource res(path_, resource.Name, version);
     res.RemoveLocalPackage();
     resIt->second.ResourceVersions.erase(verIt);
+    manifestDirty_ = true;
     return true;
 }
 
-std::optional<Manifest::ResourceVersion> ResourceCacheRepository::FindResourceVersion(std::string const& name, VersionNumber const& gameVersion)
+std::optional<Manifest::ResourceVersion> ResourceCacheRepository::FindResourceVersion(std::string const& resourceName, VersionNumber const& gameVersion)
 {
-    auto resource = manifest_.Resources.find(name);
-    if (resource == manifest_.Resources.end()) {
-        return {};
-    }
-
-    return resource->second.FindResourceVersionWithOverrides(gameVersion, config_);
+    return manifest_.FindResourceVersionWithOverrides(resourceName, gameVersion, config_);
 }
 
-std::optional<std::wstring> ResourceCacheRepository::FindResourcePath(std::string const& name, VersionNumber const& gameVersion)
+std::optional<CachedResource> ResourceCacheRepository::FindLoadableResource(std::string const& resourceName, VersionNumber const& gameVersion)
 {
-    auto resource = manifest_.Resources.find(name);
-    if (resource == manifest_.Resources.end()) {
-        return {};
-    }
-
-    auto ver = resource->second.FindResourceVersionWithOverrides(gameVersion, config_);
+    auto ver = manifest_.FindResourceVersionWithOverrides(resourceName, gameVersion, config_);
     if (!ver) {
         return {};
     }
 
-    CachedResource res(path_, resource->second, *ver);
+    CachedResource res(path_, resourceName, *ver);
     if (res.ExtenderDLLExists()) {
-        return res.GetLocalPath();
-    } else {
-        return {};
-    }
-}
-
-std::optional<std::wstring> ResourceCacheRepository::FindResourceDllPath(std::string const& name, VersionNumber const& gameVersion)
-{
-    auto resource = manifest_.Resources.find(name);
-    if (resource == manifest_.Resources.end()) {
-        return {};
-    }
-
-    auto ver = resource->second.FindResourceVersionWithOverrides(gameVersion, config_);
-    if (!ver) {
-        return {};
-    }
-
-    CachedResource res(path_, resource->second, *ver);
-    if (res.ExtenderDLLExists()) {
-        return res.GetAppDllPath();
+        return res;
     } else {
         return {};
     }
@@ -436,7 +435,7 @@ std::optional<std::wstring> ResourceCacheRepository::FindResourceDllPath(std::st
 
 bool ResourceCacheRepository::HasLocalCopy(Manifest::Resource const& resource, Manifest::ResourceVersion const& version) const
 {
-    CachedResource res(path_, resource, version);
+    CachedResource res(path_, resource.Name, version);
     return res.ExtenderDLLExists();
 }
 
@@ -451,6 +450,7 @@ void ResourceCacheRepository::AddResourceToManifest(Manifest::Resource const& re
     }
 
     AddVersionToResource(resIt->second, version);
+    manifestDirty_ = true;
 }
 
 void ResourceCacheRepository::AddVersionToResource(Manifest::Resource& resource, Manifest::ResourceVersion const& version)
@@ -464,6 +464,8 @@ void ResourceCacheRepository::AddVersionToResource(Manifest::Resource& resource,
     } else {
         it->second = ver;
     }
+
+    manifestDirty_ = true;
 }
 
 

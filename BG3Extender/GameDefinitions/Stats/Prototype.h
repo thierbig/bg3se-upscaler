@@ -101,7 +101,7 @@ struct SpellPrototype : public Noncopyable<SpellPrototype>
     FixedString PrepareLoopSound;
     FixedString CastSound;
     uint8_t CastSoundType;
-    uint8_t field_299;
+    [[bg3::legacy(field_299)]] bool IsWeaponAttack;
     uint8_t Sheathing;
     Array<FixedString> AlternativeCastTextEvents;
     int8_t SourceLimbIndex;
@@ -230,7 +230,7 @@ struct InterruptPrototype
     stats::ConditionId Conditions;
     FixedString Container;
     stats::ConditionId RollCondition;
-    [[bg3::hidden]] Array<void*> Costs;
+    Array<ActionResourceCost> Costs;
     FixedString Stack;
     Functors PropertiesFunctors;
     Functors SuccessFunctors;

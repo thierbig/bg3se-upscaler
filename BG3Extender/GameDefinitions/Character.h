@@ -67,6 +67,8 @@ struct Character : public BaseProxyComponent
     Status* GetStatus(FixedString statusId);
     Status* GetStatusByType(StatusType type);
 
+    CharacterTemplate* CreateCacheTemplate();
+
     void* VMT;
     void* VMT2;
     EntityHandle field_10;
@@ -124,7 +126,6 @@ struct Character : public BaseProxyComponent
     uint8_t NumConsumables;
     CharacterFlags2 Flags2;
     CharacterFlags3 Flags3;
-    [[bg3::hidden]] void* _PAD;
 
     RefReturn<Character> LuaGetSelf() const;
 };
@@ -205,7 +206,6 @@ struct Character : public BaseProxyComponent
     uint8_t FeetStatus;
     CharacterFlags2 Flags2;
     CharacterFlags3 Flags3;
-    [[bg3::hidden]] void* _PAD;
 };
 
 END_NS()

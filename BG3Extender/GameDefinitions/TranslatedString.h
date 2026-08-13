@@ -48,41 +48,33 @@ struct TranslatedString
 struct TranslatedFSString
 {
     RuntimeStringHandle Handle;
-    void* ArgumentString;
+    struct TranslatedFSArgumentString* ArgumentString{ nullptr };
 
     std::optional<StringView> Get() const;
 };
 
-template <class Pred>
-inline void SpinWait(Pred pred)
+struct TranslatedFSArgumentString : private ProtectedGameObject<TranslatedFSArgumentString>
 {
-    while (!pred()) {
-        unsigned spinCount = 0;
-        while (!pred()) {
-            _mm_pause();
-            if (spinCount++ > 400) {
-                Sleep(0);
-                break;
-            }
-        }
-    }
-}
+    struct Argument
+    {
+        uint32_t Type;
+        TranslatedFSString TranslatedValue;
+        STDString StringValue;
+    };
+    
+    struct ArgumentPosition
+    {
+        uint32_t Start;
+        uint32_t End;
+    };
 
-class SRWSpinLock
-{
-public:
-    void ReadLock();
-    void ReadUnlock();
-    void WriteLock();
-    void WriteUnlock();
-
-private:
-    std::atomic<uint32_t> FastLock;
-    DWORD OwningThreadId;
-    uint32_t WriteEnterCount;
-
-    void WriteWait();
-    void ReadWait();
+    LegacyRefMap<FixedString, Argument>* Arguments;
+    RuntimeStringHandle String;
+    char* Buffer;
+    STDString ParsedString;
+    uint32_t BufferLength;
+    bool NeedsParsing;
+    LegacyRefMap<FixedString, ArgumentPosition> ArgPositions;
 };
 
 struct TranslatedArgumentStringBuffer
@@ -125,6 +117,15 @@ struct TranslatedStringRepository : public ProtectedGameObject<TranslatedStringR
 
     std::optional<StringView> GetTranslatedString(RuntimeStringHandle const& handle);
     void UpdateTranslatedString(RuntimeStringHandle const& handle, StringView translated);
+};
+
+struct TranslatedStringKeyManager : public ProtectedGameObject<TranslatedStringKeyManager>
+{
+    void* VMT;
+    Array<Path> Folders_Path;
+    LegacyMap<FixedString, TranslatedString> Keys;
+    LegacyMap<FixedString, FixedString> Speakers;
+    bool DoDecoration;
 };
 
 END_SE()

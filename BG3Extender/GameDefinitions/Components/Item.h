@@ -171,15 +171,13 @@ struct Scenery : public BaseProxyComponent
 {
     DEFINE_COMPONENT(Scenery, "ecl::Scenery")
 
-    [[bg3::readonly]] EntityHandle Entity2;
+    EntityHandle Entity2;
     SceneryFlags Flags;
     ecs::EntityRef Entity;
     Guid Uuid;
     SceneryInitSound* Sound;
     FixedString Visual;
-    uint16_t VisualLoadFlags;
-    // Likely unused
-    [[bg3::hidden]] uint64_t field_60;
+    VisualLoadFlags VisualLoadFlags;
 };
 
 END_NS()

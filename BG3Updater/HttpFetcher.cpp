@@ -10,8 +10,14 @@ HttpFetcher::HttpFetcher()
 
 HttpFetcher::~HttpFetcher()
 {
-    if (curl_ != NULL) {
+    Cleanup();
+}
+
+void HttpFetcher::Cleanup()
+{
+    if (curl_ != nullptr) {
         curl_easy_cleanup(curl_);
+        curl_ = nullptr;
     }
 }
 
@@ -28,10 +34,10 @@ void HttpFetcher::LogError(CURL* curl, CURLcode result)
     }
 
     lastError_ = ss.str();
-    DEBUG("Updater error: %s", lastError_.c_str());
+    DEBUG("  Fetch failed: %s", lastError_.c_str());
 }
 
-bool HttpFetcher::Fetch(std::string const& url, std::vector<uint8_t> & response)
+OperationResult HttpFetcher::Fetch(std::string const& url, std::vector<char> & response)
 {
     cancelling_ = false;
     socket_ = NULL;
@@ -41,15 +47,22 @@ bool HttpFetcher::Fetch(std::string const& url, std::vector<uint8_t> & response)
     }
 
     curl_easy_setopt(curl_, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl_, CURLOPT_NOBODY, 0);
-    curl_easy_setopt(curl_, CURLOPT_HEADER, 0);
-    curl_easy_setopt(curl_, CURLOPT_FAILONERROR, 1);
-    curl_easy_setopt(curl_, CURLOPT_CONNECTTIMEOUT_MS, 10000);
+    curl_easy_setopt(curl_, CURLOPT_NOBODY, 0l);
+    curl_easy_setopt(curl_, CURLOPT_HEADER, 0l);
+    curl_easy_setopt(curl_, CURLOPT_FAILONERROR, 1l);
     curl_easy_setopt(curl_, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
     curl_easy_setopt(curl_, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA | CURLSSLOPT_REVOKE_BEST_EFFORT);
 
+    if (Timeout) {
+        curl_easy_setopt(curl_, CURLOPT_TIMEOUT_MS, *Timeout);
+        curl_easy_setopt(curl_, CURLOPT_CONNECTTIMEOUT_MS, std::min(*Timeout, ConnectionTimeout));
+    } else {
+        curl_easy_setopt(curl_, CURLOPT_TIMEOUT_MS, 0);
+        curl_easy_setopt(curl_, CURLOPT_CONNECTTIMEOUT_MS, ConnectionTimeout);
+    }
+
     if (DebugLogging) {
-        curl_easy_setopt(curl_, CURLOPT_VERBOSE, 1);
+        curl_easy_setopt(curl_, CURLOPT_VERBOSE, 1l);
         curl_easy_setopt(curl_, CURLOPT_DEBUGFUNCTION, &DebugFunc);
     }
 
@@ -65,18 +78,27 @@ bool HttpFetcher::Fetch(std::string const& url, std::vector<uint8_t> & response)
     curl_easy_setopt(curl_, CURLOPT_WRITEDATA, this);
     lastResponse_.clear();
 
+    DEBUG("Start cURL fetch for URL %s", url.c_str());
+    DEBUG("  (Debug %s, IPv4 only %s)", (DebugLogging ? "on" : "off"), (IPv4Only ? "on" : "off"));
+
     lastResult_ = curl_easy_perform(curl_);
     if (lastResult_ != CURLE_OK) {
         LogError(curl_, lastResult_);
+    } else {
+        DEBUG("  Fetch succeeded (%lld bytes)", lastResponse_.size());
     }
 
     response = lastResponse_;
-    return (lastResult_ == CURLE_OK);
+    if (lastResult_ == CURLE_OK) {
+        return OperationSuccessful{};
+    } else {
+        return ErrorReason{ TransferCategory, lastResult_, lastError_ };
+    }
 }
 
 size_t HttpFetcher::XferInfoFunc(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow)
 {
-    DEBUG("XferInfo: %d", dlnow);
+    DEBUG("XferInfo: %lld/%lld", dlnow, dltotal);
     auto self = reinterpret_cast<HttpFetcher*>(clientp);
     if (self->cancelling_) {
         return 1;
@@ -113,13 +135,12 @@ int HttpFetcher::DebugFunc(CURL* handle, curl_infotype type, char* data, size_t 
 {
     std::string line;
     switch (type) {
-    case CURLINFO_TEXT: line = "* "; break;
-    case CURLINFO_HEADER_IN: line = "< "; break;
-    case CURLINFO_HEADER_OUT: line = "> "; break;
+    case CURLINFO_TEXT: line = "* "; line += std::string_view(data, size - 1); break;
+    case CURLINFO_HEADER_IN: line = "< "; line += std::string_view(data, size - 2); break;
+    case CURLINFO_HEADER_OUT: line = "> "; line += std::string_view(data, size - 2); break;
     default: return 0;
     }
 
-    line += std::string_view(data, size - 2);
     DEBUG("%s", line.c_str());
 
     return 0;

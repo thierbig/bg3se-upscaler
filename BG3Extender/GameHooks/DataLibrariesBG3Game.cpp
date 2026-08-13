@@ -141,6 +141,7 @@ namespace bg3se
         SYM_OFF(ecl__gCursorControl);
         SYM_OFF(ls__gDragDropManager);
         SYM_OFF(ls__gTranslatedStringRepository);
+        SYM_OFF(ls__gTranslatedStringKeyManager);
 
         SYM_OFF(ecl__gGameStateEventManager);
         SYM_OFF(esv__gGameStateEventManager);
@@ -153,10 +154,6 @@ namespace bg3se
 
         SYM_OFF(ecs__EntityWorld__Update);
         SYM_OFF(ecs__EntityWorld__FlushECBs);
-
-        /*SYM_OFF(esv__SurfaceActionFactory);
-        SYM_OFF(esv__SurfaceActionFactory__CreateAction);
-        SYM_OFF(esv__SurfaceManager__AddAction);*/
 
         SYM_OFF(eoc__SpellPrototypeManager);
         SYM_OFF(eoc__SpellPrototype__Init);
@@ -200,6 +197,9 @@ namespace bg3se
         SYM_OFF(ecl__LevelManager);
         SYM_OFF(ls__GlobalTemplateManager);
         SYM_OFF(esv__CacheTemplateManager);
+
+        SYM_OFF(esv__gSurfaceActionFactory);
+        SYM_OFF(esv__SurfaceActionFactory__DoCreateAction);
 
         SYM_OFF(eoc__AiGrid__FindPath);
         SYM_OFF(eoc__AiGrid__FindPathImmediate);

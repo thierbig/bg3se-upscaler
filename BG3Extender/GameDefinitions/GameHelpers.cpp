@@ -8,8 +8,10 @@
 #include <GameDefinitions/Dialog.h>
 #include <GameDefinitions/Stats/UseActions.h>
 #include <GameDefinitions/Stats/Functors.h>
+#include <GameDefinitions/Components/ServerData.h>
 
 #include <GameDefinitions/Ai.inl>
+#include <GameDefinitions/Base/Lock.inl>
 
 namespace bg3se
 {
@@ -19,17 +21,18 @@ namespace bg3se
         return reg;
     }
 
-    void EnumRegistry::Register(EnumInfoStore* ei, int32_t id)
+    void EnumRegistry::Register(EnumInfoStore* ei, EnumTypeId id)
     {
         se_assert(EnumsByName.find(ei->EnumName) == EnumsByName.end());
         EnumsByName.insert(ei->EnumName, ei);
         ei->RegistryIndex = id;
 
         if (EnumsById.size() < (uint32_t)id + 1) {
-            EnumsById.resize(id + 1);
+            EnumsById.resize((uint32_t)id + 1);
         }
 
-        EnumsById[id] = ei;
+        se_assert(Get(id) == nullptr);
+        EnumsById[(uint32_t)id] = ei;
     }
 
 
@@ -39,17 +42,18 @@ namespace bg3se
         return reg;
     }
     
-    void BitfieldRegistry::Register(BitfieldInfoStore* ei, int32_t id)
+    void BitfieldRegistry::Register(BitfieldInfoStore* ei, BitfieldTypeId id)
     {
         se_assert(BitfieldsByName.find(ei->EnumName) == BitfieldsByName.end());
         BitfieldsByName.insert(ei->EnumName, ei);
         ei->RegistryIndex = id;
 
         if (BitfieldsById.size() < (uint32_t)id + 1) {
-            BitfieldsById.resize(id + 1);
+            BitfieldsById.resize((uint32_t)id + 1);
         }
 
-        BitfieldsById[id] = ei;
+        se_assert(Get(id) == nullptr);
+        BitfieldsById[(uint32_t)id] = ei;
     }
 
     StaticSymbols* gStaticSymbols{ nullptr };
@@ -104,9 +108,13 @@ namespace bg3se
         }
 
         auto absolutePath = ToPath(path, root, canonicalize);
+        return MakeFileReaderAbsolute(absolutePath);
+    }
 
+    FileReaderPin StaticSymbols::MakeFileReaderAbsolute(StringView path) const
+    {
         Path lsPath;
-        lsPath.Name = absolutePath;
+        lsPath.Name = path;
 
         auto reader = GameAlloc<FileReader>();
         ls__FileReader__ctor(reader, lsPath, 2, 0);
@@ -251,6 +259,119 @@ namespace bg3se
         return nullptr;
     }
 
+    GameObjectTemplate* TryToCacheTemplate(GameObjectTemplate* tmpl)
+    {
+        switch (tmpl->TemplateHandle.GetType()) {
+        case TemplateType::CacheTemplate:
+        case TemplateType::LevelCacheTemplate:
+        {
+            WARN("Cannot cache template '%s' - it is already a cache template!", tmpl->Id.GetString());
+            return tmpl;
+        }
+
+        case TemplateType::RootTemplate:
+        {
+            auto templateMgr = *GetStaticSymbols().esv__CacheTemplateManager;
+            FixedString templateId(Guid::Generate().ToString());
+            return static_cast<CharacterTemplate*>(templateMgr->CacheTemplate(tmpl, tmpl->LevelName, templateId));
+        }
+
+        case TemplateType::GlobalTemplate:
+        {
+            auto templateMgr = *GetStaticSymbols().esv__CacheTemplateManager;
+            auto cached = templateMgr->Templates.get_or_default(tmpl->Id);
+            if (cached) {
+                WARN("Tried to cache global template '%s' multiple times - only a single cached template can exist!", tmpl->Id.GetString());
+                return cached;
+            }
+
+            return static_cast<CharacterTemplate*>(templateMgr->CacheTemplate(tmpl, tmpl->LevelName, tmpl->Id));
+        }
+
+        case TemplateType::LocalTemplate:
+        {
+            auto level = GetStaticSymbols().GetCurrentServerLevel();
+            if (!level) {
+                WARN("Cannot cache local template '%s' - no active level!", tmpl->Id.GetString());
+                return tmpl;
+            }
+
+            auto templateMgr = level->CacheTemplateManager;
+            auto cached = templateMgr->Templates.get_or_default(tmpl->Id);
+            if (cached) {
+                WARN("Tried to cache local template '%s' multiple times - only a single cached template can exist!", tmpl->Id.GetString());
+                return cached;
+            }
+
+            return static_cast<CharacterTemplate*>(templateMgr->CacheTemplate(tmpl, tmpl->LevelName, tmpl->Id));
+        }
+
+        default:
+        {
+            WARN("Trying to cache unsupported handle type %d?", tmpl->TemplateHandle.GetType());
+            return tmpl;
+        }
+        }
+    }
+
+    CharacterTemplate* esv::Character::CreateCacheTemplate()
+    {
+        auto oldTemplate = Template;
+        auto templateMgr = *GetStaticSymbols().esv__CacheTemplateManager;
+        auto newTmpl = static_cast<CharacterTemplate*>(TryToCacheTemplate(Template));
+        if (newTmpl != Template) {
+            DecTemplateRef(Template);
+            IncTemplateRef(newTmpl);
+            Template = newTmpl;
+
+            auto changeSys = gExtender->GetServer().GetEntityHelpers().GetSystem<esv::templates::ChangeSystem>();
+            changeSys->TemplateSwitch.set(field_10, TemplateInfo{
+                .TemplateId = newTmpl->Id,
+                .TemplateType = newTmpl->TemplateHandle.GetType()
+            });
+
+            if (OriginalTemplate == oldTemplate) {
+                DecTemplateRef(OriginalTemplate);
+                IncTemplateRef(newTmpl);
+                OriginalTemplate = newTmpl;
+            }
+
+            if (TemplateUsedForSpells == oldTemplate) {
+                DecTemplateRef(TemplateUsedForSpells);
+                IncTemplateRef(newTmpl);
+                TemplateUsedForSpells = newTmpl;
+            }
+        }
+
+        return newTmpl;
+    }
+
+    ItemTemplate* esv::Item::CreateCacheTemplate()
+    {
+        auto oldTemplate = Template;
+        auto templateMgr = *GetStaticSymbols().esv__CacheTemplateManager;
+        auto newTmpl = static_cast<ItemTemplate*>(TryToCacheTemplate(Template));
+        if (newTmpl != Template) {
+            DecTemplateRef(Template);
+            IncTemplateRef(newTmpl);
+            Template = newTmpl;
+
+            auto changeSys = gExtender->GetServer().GetEntityHelpers().GetSystem<esv::templates::ChangeSystem>();
+            changeSys->TemplateSwitch.set(field_10, TemplateInfo{
+                .TemplateId = newTmpl->Id,
+                .TemplateType = newTmpl->TemplateHandle.GetType()
+            });
+
+            if (OriginalTemplate == oldTemplate) {
+                DecTemplateRef(OriginalTemplate);
+                IncTemplateRef(newTmpl);
+                OriginalTemplate = newTmpl;
+            }
+        }
+
+        return newTmpl;
+    }
+
     char const * TempStrings::Make(STDString const & str)
     {
         auto s = _strdup(str.c_str());
@@ -270,7 +391,7 @@ namespace bg3se
 
 BEGIN_NS(lua)
 
-void LuaPolymorphic<stats::ContextData>::MakeRef(lua_State* L, stats::ContextData* value, LifetimeHandle lifetime)
+void MakePolymorphicRef(lua_State* L, stats::ContextData* value, LifetimeHandle lifetime)
 {
 #define V(type) case FunctorContextType::type: \
             MakeDirectObjectRef(L, static_cast<stats::type##ContextData*>(value), lifetime); break;
@@ -294,7 +415,7 @@ void LuaPolymorphic<stats::ContextData>::MakeRef(lua_State* L, stats::ContextDat
 #undef V
 }
 
-void LuaPolymorphic<stats::Functor>::MakeRef(lua_State* L, stats::Functor* value, LifetimeHandle lifetime)
+void MakePolymorphicRef(lua_State* L, stats::Functor* value, LifetimeHandle lifetime)
 {
 #define V(type) case stats::FunctorId::type: \
             MakeDirectObjectRef(L, static_cast<stats::type##Functor*>(value), lifetime); break;
@@ -372,7 +493,7 @@ void LuaPolymorphic<stats::Functor>::MakeRef(lua_State* L, stats::Functor* value
 #undef V
 }
 
-void LuaPolymorphic<IActionData>::MakeRef(lua_State* L, IActionData* value, LifetimeHandle lifetime)
+void MakePolymorphicRef(lua_State* L, IActionData* value, LifetimeHandle lifetime)
 {
 #define V(type) case ActionDataType::type: \
             MakeDirectObjectRef(L, static_cast<type##ActionData*>(value), lifetime); break;
@@ -419,7 +540,7 @@ void LuaPolymorphic<IActionData>::MakeRef(lua_State* L, IActionData* value, Life
 #undef V
 }
 
-void LuaPolymorphic<TextKeyTypeProperties>::MakeRef(lua_State* L, TextKeyTypeProperties* value, LifetimeHandle lifetime)
+void MakePolymorphicRef(lua_State* L, TextKeyTypeProperties* value, LifetimeHandle lifetime)
 {
 #define V(type) case TextKeyType::type: \
             MakeDirectObjectRef(L, static_cast<TextKey##type##TypeProperties*>(value), lifetime); break;
@@ -448,7 +569,7 @@ void LuaPolymorphic<TextKeyTypeProperties>::MakeRef(lua_State* L, TextKeyTypePro
 #undef V
 }
 
-void LuaPolymorphic<aspk::Property>::MakeRef(lua_State* L, aspk::Property* value, LifetimeHandle lifetime)
+void MakePolymorphicRef(lua_State* L, aspk::Property* value, LifetimeHandle lifetime)
 {
 #define V(type) case aspk::PropertyType::type: \
             MakeDirectObjectRef(L, static_cast<aspk::type##Property*>(value), lifetime); break;
@@ -476,7 +597,7 @@ void LuaPolymorphic<aspk::Property>::MakeRef(lua_State* L, aspk::Property* value
 #undef V
 }
 
-void LuaPolymorphic<aspk::KeyFrameData>::MakeRef(lua_State* L, aspk::KeyFrameData* value, LifetimeHandle lifetime)
+void MakePolymorphicRef(lua_State* L, aspk::KeyFrameData* value, LifetimeHandle lifetime)
 {
     switch (value->GetType()) {
     case 0:
@@ -496,7 +617,7 @@ void LuaPolymorphic<aspk::KeyFrameData>::MakeRef(lua_State* L, aspk::KeyFrameDat
 #undef V
 }
 
-void LuaPolymorphic<resource::PhysicsResource::ObjectTemplate::PhysicsObject>::MakeRef(lua_State* L, resource::PhysicsResource::ObjectTemplate::PhysicsObject* value, LifetimeHandle lifetime)
+void MakePolymorphicRef(lua_State* L, resource::PhysicsResource::ObjectTemplate::PhysicsObject* value, LifetimeHandle lifetime)
 {
     if (value->GetType().GetStringView() == "box")
     {
@@ -512,7 +633,7 @@ void LuaPolymorphic<resource::PhysicsResource::ObjectTemplate::PhysicsObject>::M
     }
 }
 
-void LuaPolymorphic<dlg::DialogNode>::MakeRef(lua_State* L, dlg::DialogNode* value, LifetimeHandle lifetime)
+void MakePolymorphicRef(lua_State* L, dlg::DialogNode* value, LifetimeHandle lifetime)
 {
 #define V(type) if (value->ConstructorID == GFS.str##type) { MakeDirectObjectRef(L, static_cast<dlg::type##Node*>(value), lifetime); return; }
 
@@ -546,7 +667,7 @@ void LuaPolymorphic<dlg::DialogNode>::MakeRef(lua_State* L, dlg::DialogNode* val
     MakeDirectObjectRef(L, value, lifetime);
 }
 
-void LuaPolymorphic<aspk::Component>::MakeRef(lua_State* L, aspk::Component* value, LifetimeHandle lifetime)
+void MakePolymorphicRef(lua_State* L, aspk::Component* value, LifetimeHandle lifetime)
 {
     auto componentType = value->GetTypeName().GetStringView();
 #define V(type) else if (componentType == #type) \
@@ -651,7 +772,7 @@ void LuaPolymorphic<aspk::Component>::MakeRef(lua_State* L, aspk::Component* val
 #undef V
 }
 
-void LuaPolymorphic<aspk::TLMaterialComponent::Parameter>::MakeRef(lua_State* L, aspk::TLMaterialComponent::Parameter* value, LifetimeHandle lifetime)
+void MakePolymorphicRef(lua_State* L, aspk::TLMaterialComponent::Parameter* value, LifetimeHandle lifetime)
 {
     aspk::TLMaterialComponent::Parameter::Range range;
     value->getRange(range);
@@ -1060,73 +1181,6 @@ bool AppliedMaterial::SetVirtualTexture(FixedString const& paramName, FixedStrin
 
         ERR("Material has no VT parameter named '%s'", paramName.GetString());
         return false;
-    }
-}
-
-void SRWSpinLock::ReadLock()
-{
-    if (OwningThreadId == 0xffffffffu || OwningThreadId != GetCurrentThreadId()) {
-        ReadWait();
-    }
-}
-
-void SRWSpinLock::ReadUnlock()
-{
-    if (OwningThreadId == 0xffffffffu || OwningThreadId != GetCurrentThreadId()) {
-        se_assert((FastLock & 0x000fffffu) > 0);
-        --FastLock;
-    }
-}
-
-void SRWSpinLock::WriteLock()
-{
-    if (OwningThreadId == 0xffffffffu || OwningThreadId != GetCurrentThreadId()) {
-        WriteWait();
-
-        OwningThreadId = GetCurrentThreadId();
-    }
-
-    ++WriteEnterCount;
-}
-
-void SRWSpinLock::WriteUnlock()
-{
-    se_assert(WriteEnterCount > 0);
-    if (--WriteEnterCount == 0) {
-        se_assert(OwningThreadId == GetCurrentThreadId());
-        se_assert((FastLock & 0xfff00000u) > 0);
-        OwningThreadId = 0xffffffffu;
-        FastLock -= 0x100000u;
-    }
-}
-
-void SRWSpinLock::WriteWait()
-{
-    for (;;) {
-        SpinWait([&] () { return (FastLock & 0xfff00000u) == 0; });
-
-        if ((FastLock.fetch_add(0x100000u) & 0xfff00000u) == 0) {
-            break;
-        }
-
-        FastLock -= 0x100000u;
-    }
-
-    if ((FastLock & 0x000fffffu) != 0) {
-        SpinWait([&] () { return (FastLock & 0x000fffffu) == 0; });
-    }
-}
-
-void SRWSpinLock::ReadWait()
-{
-    for (;;) {
-        SpinWait([&] () { return (FastLock & 0xfff00000u) == 0; });
-
-        if ((FastLock.fetch_add(1) & 0xfff00000u) == 0) {
-            break;
-        }
-
-        --FastLock;
     }
 }
 

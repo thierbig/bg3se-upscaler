@@ -11,77 +11,6 @@ stats::RPGStats* GetStatsManager()
     return GetStaticSymbols().GetStats();
 }
 
-/*Array<FixedString> FetchSkillSetEntries(RPGStats* stats)
-{
-    Array<FixedString> names;
-    for (auto skillSet : stats->SkillSetManager->Elements) {
-        names.push_back(skillSet->Name);
-    }
-
-    return names;
-}
-
-Array<FixedString> FetchItemComboEntries(RPGStats* stats)
-{
-    ObjectSet<FixedString> names;
-    for (auto itemCombo : stats->ItemCombinationManager->Elements) {
-        names.push_back(itemCombo->Name);
-    }
-
-    return names;
-}
-
-Array<FixedString> FetchItemComboPropertyEntries(RPGStats* stats)
-{
-    ObjectSet<FixedString> names;
-    for (auto const& combo : stats->ItemCombinationManager->ComboProperties) {
-        names.push_back(combo.Key);
-    }
-
-    return names;
-}
-
-Array<FixedString> FetchItemComboPreviewDataEntries(RPGStats* stats)
-{
-    Array<FixedString> names;
-    for (auto const& preview : stats->ItemCombinationManager->PreviewData) {
-        names.push_back(preview.Key);
-    }
-
-    return names;
-}
-
-Array<FixedString> FetchItemGroupEntries(RPGStats* stats)
-{
-    Array<FixedString> names;
-    for (auto const& group : stats->ItemProgressionManager->ItemGroups) {
-        names.push_back(group.Key);
-    }
-
-    return names;
-}
-
-Array<FixedString> FetchItemNameGroupEntries(RPGStats* stats)
-{
-    Array<FixedString> names;
-    for (auto const& group : stats->ItemProgressionManager->NameGroups) {
-        names.push_back(group.Key);
-    }
-
-    return names;
-}*/
-
-
-/*Array<FixedString> FetchEquipmentSetEntries(RPGStats* stats)
-{
-    Array<FixedString> names;
-    for (auto equipmentSet : stats->EquipmentSetManager->Elements) {
-        names.push_back(equipmentSet->Name);
-    }
-
-    return names;
-}*/
-
 Array<FixedString> FetchTreasureTableEntries(RPGStats* stats)
 {
     Array<FixedString> names;
@@ -222,55 +151,48 @@ Array<FixedString> GetStatsLoadedBefore(FixedString const& modUuid, std::optiona
 
     return FetchStatEntriesBefore(stats, modUuid, statType);
 }
-/*
-ByValReturn<SkillSet> GetSkillSet(char const* skillSetName)
+
+SpellSet* GetSpellSet(FixedString const& name)
 {
     auto stats = GetStaticSymbols().GetStats();
-    return stats->SkillSetManager->Find(skillSetName);
+    return stats->SpellSetManager->GetByName(name);
 }
 
-void UpdateSkillSet(lua_State* L)
+Array<SpellSet*> GetAllSpellSets()
 {
-    luaL_checktype(L, 1, LUA_TTABLE);
-    auto name = checked_getfield<FixedString>(L, "Name", 1);
-
     auto stats = GetStaticSymbols().GetStats();
-    auto skillSet = stats->SkillSetManager->Find(name);
-    bool isNew = (skillSet == nullptr);
-
-    lua_pushvalue(L, 1);
-    LuaRead(L, skillSet);
-    lua_pop(L, 1);
-
-    if (isNew) {
-        stats->SkillSetManager->Add(name, skillSet);
-    }
+    return stats->SpellSetManager->Values;
 }
 
-UserReturn GetEquipmentSet(lua_State * L, FixedString const& equipmentSetName)
+SpellSet* CreateSpellSet(lua_State* L, FixedString const& name)
 {
     auto stats = GetStaticSymbols().GetStats();
-    auto equipmentSet = stats->EquipmentSetManager->Find(equipmentSetName);
-    return LuaWrite(L, equipmentSet);
+    auto spellSet = GameAlloc<SpellSet>();
+    spellSet->Name = name;
+    stats->SpellSetManager->Insert(spellSet);
+    return spellSet;
 }
 
-void UpdateEquipmentSet(lua_State* L)
+EquipmentSet* GetEquipmentSet(FixedString const& name)
 {
-    luaL_checktype(L, 1, LUA_TTABLE);
-    auto name = checked_getfield<FixedString>(L, "Name", 1);
-
     auto stats = GetStaticSymbols().GetStats();
-    auto equipmentSet = stats->EquipmentSetManager->Find(name);
-    bool isNew = (equipmentSet == nullptr);
+    return stats->EquipmentSetManager->GetByName(name);
+}
 
-    lua_pushvalue(L, 1);
-    LuaRead(L, equipmentSet);
-    lua_pop(L, 1);
+Array<EquipmentSet*> GetAllEquipmentSets()
+{
+    auto stats = GetStaticSymbols().GetStats();
+    return stats->EquipmentSetManager->Values;
+}
 
-    if (isNew) {
-        stats->EquipmentSetManager->Add(name, equipmentSet);
-    }
-}*/
+EquipmentSet* CreateEquipmentSet(lua_State* L, FixedString const& name)
+{
+    auto stats = GetStaticSymbols().GetStats();
+    auto equipmentSet = GameAlloc<EquipmentSet>();
+    equipmentSet->Name = name;
+    stats->EquipmentSetManager->Insert(equipmentSet);
+    return equipmentSet;
+}
 
 UserReturn GetTreasureTableLegacy(lua_State* L, FixedString const& tableName)
 {
@@ -337,144 +259,110 @@ void UpdateTreasureCategory(lua_State* L, FixedString const& name)
     }
 }
 
-/*UserReturn GetItemCombo(lua_State* L, FixedString const& comboName)
+ItemCombination* GetItemCombination(lua_State* L, FixedString const& name)
 {
-    auto combo = GetStaticSymbols().GetStats()->ItemCombinationManager->Find(comboName);
-    return LuaWrite(L, combo);
+    return GetStaticSymbols().GetStats()->ItemCombinationManager->GetByName(name);
 }
 
-void UpdateItemCombo(lua_State* L)
+Array<ItemCombination*> GetAllItemCombinations()
 {
-    luaL_checktype(L, 1, LUA_TTABLE);
-    auto name = checked_getfield<FixedString>(L, "Name", 1);
+    auto stats = GetStaticSymbols().GetStats();
+    return stats->ItemCombinationManager->Values;
+}
+
+ItemCombination* CreateItemCombination(lua_State* L, FixedString const& name)
+{
+    auto combo = GameAlloc<ItemCombination>();
+    combo->Name = name;
 
     auto stats = GetStaticSymbols().GetStats();
-    auto combo = stats->ItemCombinationManager->Find(name);
-    bool isNew = (combo == nullptr);
+    stats->ItemCombinationManager->Insert(combo);
+    return combo;
+}
 
-    lua_pushvalue(L, 1);
-    LuaRead(L, combo);
-    lua_pop(L, 1);
+ItemCombinationPreviewData* GetItemCombinationPreviewData(lua_State* L, FixedString const& name)
+{
+    auto preview = GetStaticSymbols().GetStats()->ItemCombinationManager->PreviewData.try_get(name);
+    return preview ? *preview : nullptr;
+}
 
-    if (isNew) {
-        stats->ItemCombinationManager->Add(name, combo);
+Array<ItemCombinationPreviewData*> GetAllItemCombinationPreviewDatas()
+{
+    Array<ItemCombinationPreviewData*> previews;
+    auto stats = GetStaticSymbols().GetStats();
+    for (auto const& kv : stats->ItemCombinationManager->PreviewData) {
+        previews.push_back(kv.Value);
     }
+    return previews;
 }
 
-UserReturn GetItemComboPreviewData(lua_State* L, FixedString const& comboName)
+ItemCombinationPreviewData* CreateItemCombinationPreviewData(lua_State* L, FixedString const& name)
 {
-    auto preview = GetStaticSymbols().GetStats()->ItemCombinationManager->PreviewData.try_get(comboName);
-    return LuaWrite(L, preview);
-}
-
-void UpdateItemComboPreviewData(lua_State* L)
-{
-    luaL_checktype(L, 1, LUA_TTABLE);
-    auto name = checked_getfield<FixedString>(L, "Name", 1);
+    auto preview = GameAlloc<ItemCombinationPreviewData>();
+    preview->Name = name;
 
     auto stats = GetStaticSymbols().GetStats();
-    auto existing = stats->ItemCombinationManager->PreviewData.try_get(name);
-    ItemCombinationPreviewData* previewData = existing ? existing : nullptr;
-    bool isNew = (previewData == nullptr);
+    stats->ItemCombinationManager->PreviewData.insert(name, preview);
+    return preview;
+}
 
-    lua_pushvalue(L, 1);
-    LuaRead(L, previewData);
-    lua_pop(L, 1);
+ItemCombinationProperty* GetItemCombinationProperty(lua_State* L, FixedString const& name)
+{
+    auto property = GetStaticSymbols().GetStats()->ItemCombinationManager->Properties.try_get(name);
+    return property ? *property : nullptr;
+}
 
-    if (isNew) {
-        stats->ItemCombinationManager->PreviewData.insert(name, previewData);
+Array<ItemCombinationProperty*> GetAllItemCombinationProperties()
+{
+    Array<ItemCombinationProperty*> properties;
+    auto stats = GetStaticSymbols().GetStats();
+    for (auto const& kv : stats->ItemCombinationManager->Properties) {
+        properties.push_back(kv.Value);
     }
+    return properties;
 }
 
-UserReturn GetItemComboProperty(lua_State* L, FixedString const& propertyName)
+ItemCombinationProperty* CreateItemCombinationProperty(lua_State* L, FixedString const& name)
 {
-    auto prop = GetStaticSymbols().GetStats()->ItemCombinationManager->ComboProperties.try_get(propertyName);
-    return LuaWrite(L, prop);
-}
-
-void UpdateItemComboProperty(lua_State* L)
-{
-    luaL_checktype(L, 1, LUA_TTABLE);
-    auto name = checked_getfield<FixedString>(L, "Name", 1);
+    auto property = GameAlloc<ItemCombinationProperty>();
+    property->Name = name;
 
     auto stats = GetStaticSymbols().GetStats();
-    auto existing = stats->ItemCombinationManager->ComboProperties.try_get(name);
-    ItemCombinationProperty* comboProperty = existing ? existing : nullptr;
-    bool isNew = (comboProperty == nullptr);
-
-    lua_pushvalue(L, 1);
-    LuaRead(L, comboProperty);
-    lua_pop(L, 1);
-
-    if (isNew) {
-        stats->ItemCombinationManager->ComboProperties.insert(name, comboProperty);
-    }
+    stats->ItemCombinationManager->Properties.insert(name, property);
+    return property;
 }
 
-UserReturn GetItemGroup(lua_State* L, FixedString const& name)
+ItemGroup* GetItemGroup(lua_State* L, FixedString const& name)
 {
     auto group = GetStaticSymbols().GetStats()->ItemProgressionManager->ItemGroups.try_get(name);
-    return LuaWrite(L, group);
+    return group ? *group : nullptr;
 }
 
-
-UserReturn GetNameGroup(lua_State* L, FixedString const& name)
+Array<ItemGroup*> GetAllItemGroups()
 {
-    auto nameGroup = GetStaticSymbols().GetStats()->ItemProgressionManager->NameGroups.try_get(name);
-    return LuaWrite(L, nameGroup);
-}
-
-UserReturn GetItemSet(lua_State* L, FixedString const& itemSetName)
-{
-    auto itemSet = GetStaticSymbols().GetStats()->ItemSetsManager->Find(itemSetName);
-    return LuaWrite(L, itemSet);
-}
-
-void UpdateItemSet(lua_State* L)
-{
-    luaL_checktype(L, 1, LUA_TTABLE);
-    auto name = checked_getfield<FixedString>(L, "Name", 1);
-
+    Array<ItemGroup*> val;
     auto stats = GetStaticSymbols().GetStats();
-    auto itemSet = stats->ItemSetsManager->Find(name);
-    bool isNew = (itemSet == nullptr);
-
-    lua_pushvalue(L, 1);
-    LuaRead(L, itemSet);
-    lua_pop(L, 1);
-
-    if (isNew) {
-        stats->ItemSetsManager->Add(name, itemSet);
+    for (auto const& kv : stats->ItemProgressionManager->ItemGroups) {
+        val.push_back(kv.Value);
     }
+    return val;
 }
 
-LegacyRefMap<FixedString, ItemColorDefinition>* GetAllItemColors()
+NameGroup* GetNameGroup(lua_State* L, FixedString const& name)
 {
-    return &GetStaticSymbols().GetStats()->Colors;
+    auto group = GetStaticSymbols().GetStats()->ItemProgressionManager->NameGroups.try_get(name);
+    return group ? *group : nullptr;
 }
 
-ItemColorDefinition* GetItemColor(lua_State* L, FixedString const& colorName)
+Array<NameGroup*> GetAllNameGroups()
 {
-    return GetStaticSymbols().GetStats()->Colors.try_get_ptr(colorName);
-}
-
-void UpdateItemColor(lua_State* L)
-{
-    luaL_checktype(L, 1, LUA_TTABLE);
-    auto name = checked_getfield<FixedString>(L, "Name", 1);
-
+    Array<NameGroup*> val;
     auto stats = GetStaticSymbols().GetStats();
-    auto itemColor = stats->Colors.try_get_ptr(name);
-    bool isNew = (itemColor == nullptr);
-
-    lua_pushvalue(L, 1);
-    LuaRead(L, itemColor);
-    lua_pop(L, 1);
-
-    if (isNew) {
-        stats->Colors.insert(name, *itemColor);
+    for (auto const& kv : stats->ItemProgressionManager->NameGroups) {
+        val.push_back(kv.Value);
     }
-}*/
+    return val;
+}
 
 /// <summary>
 /// Returns the specified stats entry as an object for easier manipulation.
@@ -527,7 +415,7 @@ StatusPrototype* GetCachedStatus(lua_State * L, FixedString name)
 
 PassivePrototype* GetCachedPassive(lua_State * L, FixedString name)
 {
-    return (*GetStaticSymbols().eoc__PassivePrototypeManager)->Passives.try_get_ptr(name);
+    return (*GetStaticSymbols().eoc__PassivePrototypeManager)->Passives.try_get(name);
 }
 
 InterruptPrototype* GetCachedInterrupt(lua_State * L, FixedString name)
@@ -793,17 +681,19 @@ void RegisterStatsLib()
     MODULE_FUNCTION(PrepareFunctorParams)
     END_MODULE()
         
-/*    DECLARE_SUBMODULE(Stats, SkillSet, Both)
+    DECLARE_SUBMODULE(Stats, SpellSet, Both)
     BEGIN_MODULE()
-    MODULE_NAMED_FUNCTION("GetLegacy", GetSkillSet)
-    MODULE_NAMED_FUNCTION("Update", UpdateSkillSet)
+    MODULE_NAMED_FUNCTION("Get", GetSpellSet)
+    MODULE_NAMED_FUNCTION("GetAll", GetAllSpellSets)
+    MODULE_NAMED_FUNCTION("Create", CreateSpellSet)
     END_MODULE()
         
     DECLARE_SUBMODULE(Stats, EquipmentSet, Both)
     BEGIN_MODULE()
-    MODULE_NAMED_FUNCTION("GetLegacy", GetEquipmentSet)
-    MODULE_NAMED_FUNCTION("Update", UpdateEquipmentSet)
-    END_MODULE()*/
+    MODULE_NAMED_FUNCTION("Get", GetEquipmentSet)
+    MODULE_NAMED_FUNCTION("GetAll", GetAllEquipmentSets)
+    MODULE_NAMED_FUNCTION("Create", CreateEquipmentSet)
+    END_MODULE()
         
     DECLARE_SUBMODULE(Stats, TreasureTable, Both)
     BEGIN_MODULE()
@@ -818,46 +708,38 @@ void RegisterStatsLib()
     MODULE_NAMED_FUNCTION("Update", UpdateTreasureCategory)
     END_MODULE()
         
-/*    DECLARE_SUBMODULE(Stats, ItemCombo, Both)
+    DECLARE_SUBMODULE(Stats, ItemCombo, Both)
     BEGIN_MODULE()
-    MODULE_NAMED_FUNCTION("GetLegacy", GetItemCombo)
-    MODULE_NAMED_FUNCTION("Update", UpdateItemCombo)
+    MODULE_NAMED_FUNCTION("Get", GetItemCombination)
+    MODULE_NAMED_FUNCTION("GetAll", GetAllItemCombinations)
+    MODULE_NAMED_FUNCTION("Create", CreateItemCombination)
     END_MODULE()
         
     DECLARE_SUBMODULE(Stats, ItemComboPreview, Both)
     BEGIN_MODULE()
-    MODULE_NAMED_FUNCTION("GetLegacy", GetItemComboPreviewData)
-    MODULE_NAMED_FUNCTION("Update", UpdateItemComboPreviewData)
+    MODULE_NAMED_FUNCTION("Get", GetItemCombinationPreviewData)
+    MODULE_NAMED_FUNCTION("GetAll", GetAllItemCombinationPreviewDatas)
+    MODULE_NAMED_FUNCTION("Create", CreateItemCombinationPreviewData)
     END_MODULE()
         
     DECLARE_SUBMODULE(Stats, ItemComboProperty, Both)
     BEGIN_MODULE()
-    MODULE_NAMED_FUNCTION("GetLegacy", GetItemComboProperty)
-    MODULE_NAMED_FUNCTION("Update", UpdateItemComboProperty)
+    MODULE_NAMED_FUNCTION("Get", GetItemCombinationProperty)
+    MODULE_NAMED_FUNCTION("GetAll", GetAllItemCombinationProperties)
+    MODULE_NAMED_FUNCTION("Create", CreateItemCombinationProperty)
     END_MODULE()
         
     DECLARE_SUBMODULE(Stats, ItemGroup, Both)
     BEGIN_MODULE()
-    MODULE_NAMED_FUNCTION("GetLegacy", GetItemGroup)
+    MODULE_NAMED_FUNCTION("Get", GetItemGroup)
+    MODULE_NAMED_FUNCTION("GetAll", GetAllItemGroups)
     END_MODULE()
         
     DECLARE_SUBMODULE(Stats, NameGroup, Both)
     BEGIN_MODULE()
-    MODULE_NAMED_FUNCTION("GetLegacy", GetNameGroup)
+    MODULE_NAMED_FUNCTION("Get", GetNameGroup)
+    MODULE_NAMED_FUNCTION("GetAll", GetAllNameGroups)
     END_MODULE()
-
-    DECLARE_SUBMODULE(Stats, ItemSet, Both)
-    BEGIN_MODULE()
-    MODULE_NAMED_FUNCTION("GetLegacy", GetItemSet)
-    MODULE_NAMED_FUNCTION("Update", UpdateItemSet)
-    END_MODULE()
-
-    DECLARE_SUBMODULE(Stats, ItemColor, Both)
-    BEGIN_MODULE()
-    MODULE_NAMED_FUNCTION("Get", GetItemColor)
-    MODULE_NAMED_FUNCTION("Update", UpdateItemColor)
-    MODULE_NAMED_FUNCTION("GetAll", GetAllItemColors)
-    END_MODULE()*/
 }
 
 END_NS()

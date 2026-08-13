@@ -106,6 +106,15 @@ void push(lua_State* L, ImguiHandle const& h)
     }
 }
 
+void push(lua_State* L, EntityOrVec3Variant const& v)
+{
+    if (v.Type) {
+        push(L, v.Position);
+    } else {
+        push(L, v.Entity);
+    }
+}
+
 void push(lua_State* L, extui::Renderable* o)
 {
     if (o) {
@@ -306,7 +315,7 @@ char const* GetDebugName(MetatableTag tag, int propertyMapIdx)
 {
     switch (tag) {
     case MetatableTag::ObjectRef:
-        return gStructRegistry.Get(propertyMapIdx)->Name.GetString();
+        return gStructRegistry.Get(StructTypeId(propertyMapIdx))->Name.GetString();
 
     case MetatableTag::Array:
         return gExtender->GetPropertyMapManager().GetArrayProxy(propertyMapIdx)->GetContainerType().TypeName.GetString();
@@ -518,8 +527,8 @@ void State::Shutdown()
     variableManager_.Invalidate();
     modVariableManager_.Invalidate();
 
-    GetEntitySystemHelpers()->EnableLogging(false);
-    GetEntitySystemHelpers()->GetLog().Clear();
+    GetEntitySystemHelpers()->GetTracer().StopTracing();
+    GetEntitySystemHelpers()->GetTracer().GetLog().Clear();
 }
 
 LifetimeHandle State::GetCurrentLifetime()
@@ -710,22 +719,12 @@ void State::OnNetMessageReceived(StringView channel, StringView payload, StringV
 
 void State::OnFindPath(AiGrid* self, AiPathId pathId)
 {
-    auto path = self->PathMap.try_get(pathId);
+    auto path = self->PathMap.get_or_default(pathId);
     if (!path || path->SearchStarted) return;
 
     FindPathEvent params;
     params.Path = path;
     ThrowEvent("FindPath", params);
-}
-
-STDString State::GetBuiltinLibrary(int resourceId)
-{
-    auto resource = GetExeResource(resourceId);
-    if (resource) {
-        return STDString(resource->c_str());
-    } else {
-        return STDString();
-    }
 }
 
 EventResult State::DispatchEvent(EventBase& evt, char const* eventName, bool canPreventAction, uint32_t restrictions)

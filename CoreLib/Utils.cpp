@@ -58,8 +58,31 @@ std::optional<std::string> GetExeResource(int resourceId)
         }
     }
 
-    ERR("Could not get bootstrap resource %d!", resourceId);
     return {};
+}
+
+void Debug(DebugMessageType type, _In_z_ _Printf_format_string_ char const* fmt, ...)
+{
+    if (gCoreLibPlatformInterface.GlobalConsole) {
+        va_list args;
+        va_start(args, fmt);
+        char buf[1024];
+        _vsnprintf_s(buf, std::size(buf), _TRUNCATE, fmt, args);
+        va_end(args);
+        gCoreLibPlatformInterface.GlobalConsole->Print(type, buf);
+    }
+}
+
+void DebugLocal(DebugMessageType type, _In_z_ _Printf_format_string_ char const* fmt, ...)
+{
+    if (gCoreLibPlatformInterface.GlobalConsole) {
+        va_list args;
+        va_start(args, fmt);
+        char buf[1024];
+        _vsnprintf_s(buf, std::size(buf), _TRUNCATE, fmt, args);
+        va_end(args);
+        gCoreLibPlatformInterface.GlobalConsole->LocalPrint(type, buf);
+    }
 }
 
 void TryDebugBreak()
@@ -100,7 +123,7 @@ bool SaveFile(std::wstring const& path, std::vector<uint8_t> const& body)
     return f.good();
 }
 
-bool SaveFile(std::wstring const& path, std::string const& body)
+bool SaveFile(std::wstring const& path, std::string_view body)
 {
     std::ofstream f(path, std::ios::binary | std::ios::out);
     if (!f.good()) {

@@ -13,6 +13,7 @@ public:
     virtual Array<Guid> GetAll() = 0;
     virtual HashMap<Guid, Array<Guid>>* GetSources() = 0;
     virtual Array<Guid>* GetByModId(Guid modGuid) = 0;
+    virtual GuidResourceBankBase* GetBank() const = 0;
 };
 
 class NullGuidResourceBankHelper : public GuidResourceBankHelperBase
@@ -28,19 +29,24 @@ public:
         return false;
     }
 
-    virtual Array<Guid> GetAll()
+    Array<Guid> GetAll() override
     {
         return {};
     }
 
-    virtual HashMap<Guid, Array<Guid>>* GetSources()
+    HashMap<Guid, Array<Guid>>* GetSources() override
     {
         return &dummySources_;
     }
 
-    virtual Array<Guid>* GetByModId(Guid modGuid)
+    Array<Guid>* GetByModId(Guid modGuid) override
     {
         return &dummyResources_;
+    }
+    
+    GuidResourceBankBase* GetBank() const override
+    {
+        return nullptr;
     }
 
 private:
@@ -106,19 +112,24 @@ public:
         return true;
     }
 
-    virtual Array<Guid> GetAll()
+    Array<Guid> GetAll() override
     {
         return bank_->Resources.keys();
     }
 
-    virtual HashMap<Guid, Array<Guid>>* GetSources()
+    HashMap<Guid, Array<Guid>>* GetSources() override
     {
         return &bank_->ResourceGuidsByMod;
     }
 
-    virtual Array<Guid>* GetByModId(Guid modGuid)
+    Array<Guid>* GetByModId(Guid modGuid) override
     {
         return bank_->ResourceGuidsByMod.try_get(modGuid);
+    }
+
+    GuidResourceBankBase* GetBank() const override
+    {
+        return bank_;
     }
 
 private:
@@ -215,6 +226,16 @@ Array<Guid>* GetGuidResourcesByModId(lua_State* L, ExtResourceManagerType type, 
     return gGuidResourceHelpers.Get(type)->GetByModId(modGuid);
 }
 
+void ClearResourceBank(ExtResourceManagerType type)
+{
+    gGuidResourceHelpers.Get(type)->GetBank()->ClearInternal();
+}
+
+void SyncResourceBank(ExtResourceManagerType type)
+{
+    gGuidResourceHelpers.Get(type)->GetBank()->PostLoad();
+}
+
 UserReturn CreateGuidResource(lua_State* L, ExtResourceManagerType type, std::optional<Guid> resourceGuid)
 {
     if (!gGuidResourceHelpers.Get(type)->Create(L, resourceGuid, true)) {
@@ -266,6 +287,30 @@ Array<FixedString> GetAllResources(ResourceBankType type)
     return ids;
 }
 
+TextureAtlasMap* GetTextureAtlasManager()
+{
+    return *GetStaticSymbols().ls__gTextureAtlasMap;
+}
+
+TextureAtlas* GetTextureAtlas(STDString path)
+{
+    return (*GetStaticSymbols().ls__gTextureAtlasMap)->AtlasMap.get_or_default(path);
+}
+
+TextureAtlas* GetIconAtlas(FixedString icon)
+{
+    return (*GetStaticSymbols().ls__gTextureAtlasMap)->IconMap.get_or_default(icon);
+}
+
+UVValues* GetIconUVs(FixedString icon)
+{
+    auto atlas = (*GetStaticSymbols().ls__gTextureAtlasMap)->IconMap.get_or_default(icon);
+    if (atlas) {
+        return atlas->Icons.get_or_default(icon);
+    }
+
+    return nullptr;
+}
 
 void RegisterStaticDataLib()
 {
@@ -276,6 +321,11 @@ void RegisterStaticDataLib()
     MODULE_NAMED_FUNCTION("GetSources", GetGuidResourceSources)
     MODULE_NAMED_FUNCTION("GetByModId", GetGuidResourcesByModId)
     MODULE_NAMED_FUNCTION("Create", CreateGuidResource)
+    MODULE_NAMED_FUNCTION("GetTextureAtlasManager", GetTextureAtlasManager)
+    MODULE_NAMED_FUNCTION("GetIconAtlas", GetIconAtlas)
+    MODULE_NAMED_FUNCTION("GetIconUVs", GetIconUVs)
+    MODULE_NAMED_FUNCTION("ClearResourceBank", ClearResourceBank)
+    MODULE_NAMED_FUNCTION("SyncResourceBank", SyncResourceBank)
     END_MODULE()
 
     DECLARE_MODULE(Resource, Both)

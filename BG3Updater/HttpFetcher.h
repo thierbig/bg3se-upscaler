@@ -2,7 +2,9 @@
 
 #include <vector>
 #include <string>
+#include <optional>
 #include <curl/curl.h>
+#include "Result.h"
 
 BEGIN_SE()
 
@@ -11,26 +13,21 @@ class HttpFetcher
 public:
     bool DebugLogging{ false };
     bool IPv4Only{ false };
+    ErrorCategory TransferCategory{ ErrorCategory::General };
+    std::optional<long> Timeout;
 
     HttpFetcher();
     ~HttpFetcher();
 
-    bool Fetch(std::string const& url, std::vector<uint8_t> & response);
+    OperationResult Fetch(std::string const& url, std::vector<char> & response);
     void Cancel();
-
-    inline CURLcode GetLastResultCode() const
-    {
-        return lastResult_;
-    }
-
-    inline std::string const & GetLastError() const
-    {
-        return lastError_;
-    }
+    void Cleanup();
 
 private:
+    static constexpr long ConnectionTimeout = 10000;
+
     std::string lastError_;
-    std::vector<uint8_t> lastResponse_;
+    std::vector<char> lastResponse_;
     long lastHttpCode_{ 0 };
     CURLcode lastResult_{ CURLE_OK };
     CURL* curl_{ NULL };

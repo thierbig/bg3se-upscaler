@@ -41,6 +41,14 @@ struct Version
     uint64_t Ver;
 };
 
+MARK_BY_VALUE_TYPE(Version)
+
+struct AABound
+{
+    glm::vec3 Min;
+    glm::vec3 Max;
+};
+
 struct GameRandom
 {
     int* FixedRollList;
@@ -58,13 +66,6 @@ struct CriticalSection : public CRITICAL_SECTION
 {
     __int64 field_28;
     __int64 field_30;
-};
-
-struct SRWLock
-{
-    SRWLOCK SRWLock;
-    int32_t ThreadId;
-    uint32_t EnterCount;
 };
 
 struct AiTilePos
@@ -121,6 +122,46 @@ static constexpr uint64_t InvalidSoundObjectId = 0xffffffffffffffffull;
 enum class LuaSoundObjectId : SoundObjectId {};
 MARK_INTEGRAL_ALIAS(LuaSoundObjectId)
 
+
+#pragma pack(push, 4)
+struct EntityOrVec3Variant
+{
+    inline EntityOrVec3Variant()
+        : Entity(EntityHandle{}), Type(0)
+    {}
+    
+    inline EntityOrVec3Variant(EntityOrVec3Variant const& v)
+        : Type(v.Type)
+    {
+        if (Type) {
+            Position = v.Position;
+        } else {
+            Entity = v.Entity;
+        }
+    }
+    
+    inline EntityOrVec3Variant& operator =(EntityOrVec3Variant const& v)
+    {
+        Type = v.Type;
+        if (Type) {
+            Position = v.Position;
+        } else {
+            Entity = v.Entity;
+        }
+        return *this;
+    }
+
+    union
+    {
+        EntityHandle Entity;
+        glm::vec3 Position;
+    };
+    uint8_t Type{ 0 };
+};
+#pragma pack(pop)
+
+MARK_BY_VALUE_TYPE(EntityOrVec3Variant);
+
 END_SE()
 
 BEGIN_NS(stats)
@@ -143,3 +184,9 @@ struct EntityRef
 };
 
 END_NS()
+
+BEGIN_SE()
+
+MARK_BY_VALUE_TYPE(ecs::EntityRef)
+
+END_SE()

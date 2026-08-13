@@ -39,6 +39,10 @@ struct LightTemplate;
 struct PhysicsTemplate;
 
 struct LevelBase;
+struct LevelDesc;
+struct LevelMetaData;
+struct LevelData;
+struct LevelDataManager;
 struct EoCLevel;
 struct LevelManager;
 
@@ -54,6 +58,8 @@ struct GlobalTemplateManager;
 struct GlobalTemplateBank;
 struct LocalTemplateManager;
 struct CacheTemplateManagerBase;
+struct GlobalCacheTemplateManager;
+struct LevelCacheTemplateManager;
 
 struct AiGrid;
 struct AiPath;
@@ -161,6 +167,10 @@ namespace esv
     struct SteeringState;
     struct SteeringMachine;
     struct TaskController;
+
+    struct Surface;
+    struct SurfaceAction;
+    struct SurfaceManager;
 
     class ExtensionState;
 

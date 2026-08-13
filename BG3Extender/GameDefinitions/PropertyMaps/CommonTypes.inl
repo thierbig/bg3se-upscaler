@@ -55,6 +55,9 @@ END_CLS()
 
 BEGIN_CLS(StatsExpressionPooled)
 INHERIT(StatsExpressionInternal)
+P_GETTER_SETTER(Params, GetParams, SetParams)
+P_GETTER_SETTER(Code, GetCode, SetCode)
+P_GETTER(RefCount, GetRefCount)
 END_CLS()
 
 
@@ -89,6 +92,12 @@ BEGIN_CLS(stats::FunctorGroup)
 P(TextKey)
 // Lua read-only helper until RO properties or transparent index support is added
 P_GETTER(Functors, GetFunctors)
+END_CLS()
+
+
+BEGIN_CLS(AABound)
+P(Min)
+P(Max)
 END_CLS()
 
 

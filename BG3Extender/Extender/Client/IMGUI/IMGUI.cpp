@@ -59,12 +59,12 @@ bool ImageReference::BindTexture(FixedString const& textureUuid)
 
 bool ImageReference::BindIcon(FixedString const& iconName)
 {
-    auto atlas = (*GetStaticSymbols().ls__gTextureAtlasMap)->IconMap.try_get(iconName);
+    auto atlas = (*GetStaticSymbols().ls__gTextureAtlasMap)->IconMap.get_or_default(iconName);
     if (!atlas) {
         return false;
     }
 
-    auto uvs = atlas->Icons.try_get(iconName);
+    auto uvs = atlas->Icons.get_or_default(iconName);
     if (!uvs) {
         WARN("Failed to find UVs for icon '%s'", iconName.GetString());
         return false;
@@ -250,7 +250,7 @@ void StyledRenderable::HandleDragDrop(DrawingContext& context)
     {
         auto payload = ImGui::AcceptDragDropPayload(DragDropType.GetString());
         if (payload) {
-            auto source = *reinterpret_cast<HandleType*>(payload->Data);
+            auto source = *static_cast<HandleType*>(payload->Data);
             Manager->GetEventQueue().Call(OnDragDrop, lua::ImguiHandle(Handle), lua::ImguiHandle(source));
         }
         ImGui::EndDragDropTarget();
@@ -1143,7 +1143,10 @@ void Table::StyledRender(DrawingContext& context)
 
         EndRender(context);
     } else {
-        TreeParent::StyledRender(context);
+        // IMGUI crashes when rendering cells with Columns == 0
+        if (std::max(Columns, ColumnDefs.size()) > 0) {
+            TreeParent::StyledRender(context);
+        }
     }
 }
 
@@ -1454,7 +1457,7 @@ InputText::InputText()
 
 int InputTextCallback(ImGuiInputTextCallbackData* data)
 {
-    auto input = reinterpret_cast<InputText*>(data->UserData);
+    auto input = static_cast<InputText*>(data->UserData);
     if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
         input->Text.resize(std::min(data->BufTextLen, (int)InputText::MaxSize));
         data->Buf = input->Text.data();
@@ -1819,8 +1822,15 @@ void IMGUIManager::InitializeUI()
         io.IniFilename = _strdup(configPath.c_str());
     }
 
+    auto getClipboardText = GImGui->PlatformIO.Platform_GetClipboardTextFn;
+    auto setClipboardText = GImGui->PlatformIO.Platform_SetClipboardTextFn;
+
     sdl_.InitializeUI();
     renderer_->InitializeUI();
+
+    // Use native clipboard handler instead of SDL to prevent freezes when copying text
+    GImGui->PlatformIO.Platform_GetClipboardTextFn = getClipboardText;
+    GImGui->PlatformIO.Platform_SetClipboardTextFn = setClipboardText;
 
     UpdateStyle();
 

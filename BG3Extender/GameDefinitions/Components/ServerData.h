@@ -251,14 +251,6 @@ struct PeersInRangeComponent : public BaseComponent
     Array<int32_t> Peers;
 };
 
-struct SurfaceComponent : public BaseComponent
-{
-    DEFINE_COMPONENT(ServerSurface, "esv::surface::SurfaceComponent")
-
-    Guid field_0;
-    ComponentHandle field_10;
-};
-
 struct DisarmAttempt
 {
     EntityHandle field_0;
@@ -273,21 +265,6 @@ struct DisarmAttemptComponent : public BaseComponent
     DEFINE_COMPONENT(ServerDisarmAttempt, "esv::trap::DisarmAttemptComponent")
 
     Array<DisarmAttempt> Attempts;
-};
-
-struct UnsheathDefaultComponent : public BaseComponent
-{
-    DEFINE_COMPONENT(ServerUnsheath, "esv::unsheath::DefaultComponent")
-
-    int field_0;
-    bool field_4;
-};
-
-struct UnsheathScriptOverrideComponent : public BaseComponent
-{
-    DEFINE_COMPONENT(ServerUnsheathScriptOverride, "esv::unsheath::ScriptOverrideComponent")
-
-    Array<int32_t> field_0;
 };
 
 
@@ -411,6 +388,89 @@ struct CapabilitiesSystem : public BaseSystem
     bool field_58A;
     bool field_58B;
     bool IsRunning;
+};
+
+END_NS()
+
+BEGIN_NS(esv::surface)
+
+struct SurfaceComponent : public BaseComponent
+{
+    DEFINE_COMPONENT(ServerSurface, "esv::surface::SurfaceComponent")
+
+    Guid SpellCastUuid;
+    [[bg3::legacy(field_10)]] ComponentHandle SurfaceHandle;
+
+    // Lua call helpers
+    //# P_GETTER(Surface, GetSurface)
+    esv::Surface* GetSurface(lua_State* L) const;
+};
+
+struct LevelLoadedComponent : public BaseComponent
+{
+    DEFINE_COMPONENT(ServerSurfaceLevelLoaded, "esv::surface::LevelLoadedComponent")
+};
+
+struct CreatedEventOneFrameComponent : public BaseComponent
+{
+    DEFINE_ONEFRAME_COMPONENT(ServerSurfaceCreatedEvent, "esv::surface::CreatedEventOneFrameComponent")
+
+    Guid Surface;
+};
+
+struct RemovedEventOneFrameComponent : public BaseComponent
+{
+    DEFINE_ONEFRAME_COMPONENT(ServerSurfaceRemovedEvent, "esv::surface::RemovedEventOneFrameComponent")
+
+    Guid Surface;
+};
+
+END_NS()
+
+BEGIN_NS(esv::surface_action)
+
+struct FinishedEventOneFrameComponent : public BaseComponent
+{
+    DEFINE_ONEFRAME_COMPONENT(ServerSurfaceActionFinishedEvent, "esv::surface_action::FinishedEventOneFrameComponent")
+
+    Guid Surface;
+};
+
+struct GrownEventOneFrameComponent : public BaseComponent
+{
+    DEFINE_ONEFRAME_COMPONENT(ServerSurfaceActionGrownEvent, "esv::surface_action::GrownEventOneFrameComponent")
+
+    EntityHandle field_0;
+    Array<AiTilePos> Cells;
+};
+
+END_NS()
+
+BEGIN_NS(esv::unsheath)
+
+struct SpellAnimationLifetimeComponent : public BaseComponent
+{
+    DEFINE_COMPONENT(ServerUnsheathSpellAnimationLifetime, "esv::unsheath::SpellAnimationLifetimeComponent")
+
+    SpellId Spell;
+    Guid SpellCastGuid;
+    uint8_t field_48;
+    float field_4C;
+};
+
+struct DefaultComponent : public BaseComponent
+{
+    DEFINE_COMPONENT(ServerUnsheath, "esv::unsheath::DefaultComponent")
+
+    int field_0;
+    bool field_4;
+};
+
+struct ScriptOverrideComponent : public BaseComponent
+{
+    DEFINE_COMPONENT(ServerUnsheathScriptOverride, "esv::unsheath::ScriptOverrideComponent")
+
+    Array<int32_t> field_0;
 };
 
 END_NS()

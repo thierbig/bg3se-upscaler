@@ -347,7 +347,7 @@ public:
     {
         if (!initialized_) return;
 
-        auto imageView = reinterpret_cast<VkImageView>(opaqueHandle);
+        auto imageView = static_cast<VkImageView>(opaqueHandle);
         auto desc = textureDescriptors_.get_or_default(imageView, 0);
         if (desc) {
             ImGui_ImplVulkan_RemoveTexture(desc);
@@ -359,7 +359,7 @@ public:
 
     std::optional<ImTextureID> BindTexture(TextureOpaqueHandle opaqueHandle) override
     {
-        auto imageView = reinterpret_cast<VkImageView>(opaqueHandle);
+        auto imageView = static_cast<VkImageView>(opaqueHandle);
         auto desc = textureDescriptors_.get_or_default(imageView, 0);
         if (!desc) {
             desc = ImGui_ImplVulkan_AddTexture(sampler_, imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
