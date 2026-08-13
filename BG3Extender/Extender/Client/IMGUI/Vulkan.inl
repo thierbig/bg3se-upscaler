@@ -1039,6 +1039,12 @@ private:
         if (rp == VK_NULL_HANDLE)
             return evalRes;
 
+        // Bail before touching the command buffer if we have no compatible pipeline - drawing
+        // with an incompatible one is a device-lost, not a missing overlay.
+        VkPipeline overlayPipeline = getOrCreateNgxPipeline(targetFormat, rp);
+        if (overlayPipeline == VK_NULL_HANDLE)
+            return evalRes;
+
         // Get/create framebuffer for this view
         VkFramebuffer fb = VK_NULL_HANDLE;
         auto itFB = viewToFramebuffer_.find(targetView);
@@ -1086,7 +1092,7 @@ private:
         rpBegin.renderArea.extent = { targetW, targetH };
 
         vkCmdBeginRenderPass(InCmdList, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
-        auto drawn = injectImGuiIntoCommandBuffer(InCmdList);
+        auto drawn = injectImGuiIntoCommandBuffer(InCmdList, overlayPipeline);
         vkCmdEndRenderPass(InCmdList);
 
         if (drawn && !ngxOverlayDrawnLogged_) {
@@ -1114,15 +1120,38 @@ private:
         return evalRes;
     }
 
-    bool injectImGuiIntoCommandBuffer(VkCommandBuffer cmd)
+    bool injectImGuiIntoCommandBuffer(VkCommandBuffer cmd, VkPipeline pipeline)
     {
         if (!initialized_ || drawViewport_ < 0 || !cmd)
             return false;
         auto& vp = viewports_[drawViewport_].Viewport;
         if (!vp.DrawDataP.Valid || vp.DrawDataP.CmdListsCount == 0)
             return false;
-        ImGui_ImplVulkan_RenderDrawData(&vp.DrawDataP, cmd);
+        ImGui_ImplVulkan_RenderDrawData(&vp.DrawDataP, cmd, pipeline);
         return true;
+    }
+
+    // ImGui builds its pipeline against the swapchain render pass, but the NGX output is a
+    // different attachment format (B10G11R11_UFLOAT vs the swapchain's B8G8R8A8_UNORM), and a
+    // pipeline may only be used inside a render pass compatible with the one it was built for.
+    // Using the swapchain pipeline here faults the GPU and loses the device, so build one per
+    // output format.
+    VkPipeline getOrCreateNgxPipeline(VkFormat fmt, VkRenderPass renderPass)
+    {
+        auto it = formatToPipeline_.find(fmt);
+        if (it != formatToPipeline_.end()) return it->second;
+
+        auto pipeline = ImGui_ImplVulkan_CreatePipelineForRenderPass(renderPass, VK_SAMPLE_COUNT_1_BIT, 0);
+        formatToPipeline_[fmt] = pipeline;
+
+        if (pipeline == VK_NULL_HANDLE) {
+            ERR("IMGUI: could not build an overlay pipeline for NGX output format %d; "
+                "skipping the overlay rather than drawing with an incompatible pipeline", (int)fmt);
+        } else {
+            INFO("IMGUI: built overlay pipeline for NGX output format %d", (int)fmt);
+        }
+
+        return pipeline;
     }
 
     bool installNgxHookFrom(HMODULE mod, wchar_t const* label)
@@ -1234,6 +1263,7 @@ private:
 
     HashMap<VkImageView, VkDescriptorSet> textureDescriptors_;
     std::unordered_map<VkFormat, VkRenderPass> formatToRenderPass_;
+    std::unordered_map<VkFormat, VkPipeline> formatToPipeline_;
     std::unordered_map<VkImageView, VkFramebuffer> viewToFramebuffer_;
 
     VkCreateInstanceHookType CreateInstanceHook_;
