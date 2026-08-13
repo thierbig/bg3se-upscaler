@@ -925,7 +925,11 @@ private:
             }
         }
 
-        if (initialized_ && drawViewport_ != -1) {
+        if (ngxCompositedThisFrame_) {
+            // Already drawn into the NGX output this frame - drawing again here would double the
+            // overlay and lap ImGui's buffer ring.
+            ngxCompositedThisFrame_ = false;
+        } else if (initialized_ && drawViewport_ != -1) {
             presentPreHook(const_cast<VkPresentInfoKHR*>(pPresentInfo));
         } else {
             //IMGUI_FRAME_DEBUG("vkQueuePresentKHR: Cannot append command buffer - initialized %d, drawViewport %d",
@@ -1095,10 +1099,19 @@ private:
         auto drawn = injectImGuiIntoCommandBuffer(InCmdList, overlayPipeline);
         vkCmdEndRenderPass(InCmdList);
 
-        if (drawn && !ngxOverlayDrawnLogged_) {
-            ngxOverlayDrawnLogged_ = true;
-            INFO("IMGUI: drawing overlay into NGX output (%dx%d, format %d)",
-                (int)targetW, (int)targetH, (int)targetFormat);
+        if (drawn) {
+            // Claim this frame so presentPreHook() does not render the same draw data a second
+            // time. ImGui's Vulkan backend cycles its vertex/index buffers once per
+            // RenderDrawData call over a ring sized to the swapchain image count, so drawing
+            // twice per frame laps that ring and overwrites buffers still in flight.
+            ngxCompositedThisFrame_ = true;
+
+            if (!ngxOverlayDrawnLogged_) {
+                ngxOverlayDrawnLogged_ = true;
+                INFO("IMGUI: drawing overlay into NGX output (%dx%d, format %d); "
+                    "present-time overlay disabled for composited frames",
+                    (int)targetW, (int)targetH, (int)targetFormat);
+            }
         }
 
         // Transition back to GENERAL so downstream consumers can read
@@ -1289,6 +1302,9 @@ private:
     bool ngxOutputUnavailableLogged_{ false };
     bool ngxNoOutputResourceLogged_{ false };
     bool ngxOverlayDrawnLogged_{ false };
+    // Set when the NGX hook composites the overlay; consumed by the present hook so a frame is
+    // never rendered twice.
+    bool ngxCompositedThisFrame_{ false };
 
     SwapchainInfo swapchain_;
     uint32_t textures_{ 0 };
