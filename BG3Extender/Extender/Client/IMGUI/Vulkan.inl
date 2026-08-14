@@ -1102,6 +1102,7 @@ private:
             // that no longer exists - which faults the GPU. Build one per composite and retire it
             // a few frames later, once the GPU is certainly past it.
             retireStaleNgxFramebuffers();
+            purgeNgxGraveyard();
 
             VkImageView attachments[1] = { targetView };
             VkFramebufferCreateInfo fbInfo{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
@@ -1202,33 +1203,47 @@ private:
 
     // Drop everything the composite cached. The ImGui backend is torn down and rebuilt whenever
     // the swapchain is recreated - alt-tabbing does it - and NGX recreates its own resources at
-    // the same time, so nothing built against the old ones stays valid. frameNo_ also restarts
-    // at 0 on re-init, which by itself would stop framebuffers ever retiring again.
+    // the same time, so nothing built against the old ones stays valid.
+    //
+    // Nothing is destroyed here: this runs inside the swapchain-destroy hook, where the game's
+    // render threads may still be submitting, so neither vkDeviceWaitIdle nor destroying
+    // possibly-in-flight objects is safe. Everything moves to a graveyard instead, purged from
+    // the composite path once the rebuilt backend has been running long enough that the old
+    // work is certainly complete.
     void resetNgxResources()
     {
-        if (device_ != VK_NULL_HANDLE) {
-            vkDeviceWaitIdle(device_);
-
-            for (auto const& fb : ngxFramebuffers_) {
-                vkDestroyFramebuffer(device_, fb.Framebuffer, nullptr);
-            }
-
-            for (auto const& pipeline : formatToPipeline_) {
-                if (pipeline.second != VK_NULL_HANDLE) {
-                    ImGui_ImplVulkan_DestroyPipelineForRenderPass(pipeline.second);
-                }
-            }
-
-            for (auto const& renderPass : formatToRenderPass_) {
-                if (renderPass.second != VK_NULL_HANDLE) {
-                    vkDestroyRenderPass(device_, renderPass.second, nullptr);
-                }
-            }
+        for (auto const& fb : ngxFramebuffers_) {
+            ngxGraveyardFramebuffers_.push_back(fb.Framebuffer);
+        }
+        for (auto const& pipeline : formatToPipeline_) {
+            if (pipeline.second != VK_NULL_HANDLE) ngxGraveyardPipelines_.push_back(pipeline.second);
+        }
+        for (auto const& renderPass : formatToRenderPass_) {
+            if (renderPass.second != VK_NULL_HANDLE) ngxGraveyardRenderPasses_.push_back(renderPass.second);
         }
 
         ngxFramebuffers_.clear();
         formatToPipeline_.clear();
         formatToRenderPass_.clear();
+    }
+
+    // Destroy graveyard objects once the rebuilt backend has run for a while. frameNo_ restarts
+    // at 0 on re-init, so a simple threshold works. Called under the backend lock with the
+    // device alive. If the device is destroyed before we get here, the entries are abandoned -
+    // device teardown reclaims them.
+    void purgeNgxGraveyard()
+    {
+        if (frameNo_ < NgxGraveyardPurgeFrame) return;
+        if (ngxGraveyardFramebuffers_.empty() && ngxGraveyardPipelines_.empty()
+            && ngxGraveyardRenderPasses_.empty()) return;
+
+        for (auto fb : ngxGraveyardFramebuffers_) vkDestroyFramebuffer(device_, fb, nullptr);
+        for (auto pipeline : ngxGraveyardPipelines_) vkDestroyPipeline(device_, pipeline, nullptr);
+        for (auto renderPass : ngxGraveyardRenderPasses_) vkDestroyRenderPass(device_, renderPass, nullptr);
+
+        ngxGraveyardFramebuffers_.clear();
+        ngxGraveyardPipelines_.clear();
+        ngxGraveyardRenderPasses_.clear();
     }
 
     // Destroy NGX framebuffers the GPU has certainly finished with. Called under the backend
@@ -1394,7 +1409,11 @@ private:
     };
 
     static constexpr int32_t NgxFramebufferLifetime{ 8 };
+    static constexpr int32_t NgxGraveyardPurgeFrame{ 30 };
     std::vector<NgxFramebuffer> ngxFramebuffers_;
+    std::vector<VkFramebuffer> ngxGraveyardFramebuffers_;
+    std::vector<VkPipeline> ngxGraveyardPipelines_;
+    std::vector<VkRenderPass> ngxGraveyardRenderPasses_;
 
     VkCreateInstanceHookType CreateInstanceHook_;
     VkCreateDeviceHookType CreateDeviceHook_;
