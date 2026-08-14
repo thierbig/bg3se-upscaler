@@ -9,6 +9,8 @@
 #include <backends/imgui_impl_vulkan.h>
 #include <imgui_internal.h>
 #include <unordered_map>
+#include <iterator>
+#include <cstdlib>
 #include <vector>
 #include <psapi.h>
 
@@ -970,6 +972,24 @@ private:
         if (!initialized_ || drawViewport_ < 0)
             return evalRes;
 
+        // DIAGNOSTIC (temporary): BG3SE_NGX_STAGE bisects the composite without a rebuild.
+        //   0 = do nothing              (control - is the composite the cause at all?)
+        //   1 = layout barriers only    (tests the VK_IMAGE_LAYOUT_GENERAL assumption)
+        //   2 = + render pass, no draw  (tests the framebuffer / render pass)
+        //   3 = + ImGui draw            (full, default)
+        if (ngxStage_ < 0) {
+            wchar_t buf[16]{};
+            auto len = GetEnvironmentVariableW(L"BG3SE_NGX_STAGE", buf, (DWORD)std::size(buf));
+            ngxStage_ = (len > 0 && len < std::size(buf)) ? _wtoi(buf) : 3;
+            if (ngxStage_ < 0 || ngxStage_ > 3) ngxStage_ = 3;
+            INFO("IMGUI: NGX composite stage %d "
+                "(0=off 1=barriers 2=+renderpass 3=full) - set BG3SE_NGX_STAGE to change",
+                ngxStage_);
+        }
+
+        if (ngxStage_ == 0)
+            return evalRes;
+
         // Resolve lazily and keep retrying until found - the providing module may not be loaded
         // yet the first time we get here, and caching a null would disable the overlay for good.
         if (ngxGetVoidPointer_ == nullptr) {
@@ -1053,22 +1073,29 @@ private:
             return rp;
         };
 
-        VkRenderPass rp = getOrCreateRenderPass(targetFormat);
-        if (rp == VK_NULL_HANDLE)
-            return evalRes;
+        VkRenderPass rp = VK_NULL_HANDLE;
+        VkPipeline overlayPipeline = VK_NULL_HANDLE;
+        VkFramebuffer fb = VK_NULL_HANDLE;
+
+        if (ngxStage_ >= 2) {
+            rp = getOrCreateRenderPass(targetFormat);
+            if (rp == VK_NULL_HANDLE)
+                return evalRes;
+        }
 
         // Bail before touching the command buffer if we have no compatible pipeline - drawing
         // with an incompatible one is a device-lost, not a missing overlay.
-        VkPipeline overlayPipeline = getOrCreateNgxPipeline(targetFormat, rp);
-        if (overlayPipeline == VK_NULL_HANDLE)
-            return evalRes;
+        if (ngxStage_ >= 3) {
+            overlayPipeline = getOrCreateNgxPipeline(targetFormat, rp);
+            if (overlayPipeline == VK_NULL_HANDLE)
+                return evalRes;
+        }
 
         // Get/create framebuffer for this view
-        VkFramebuffer fb = VK_NULL_HANDLE;
-        auto itFB = viewToFramebuffer_.find(targetView);
+        auto itFB = ngxStage_ >= 2 ? viewToFramebuffer_.find(targetView) : viewToFramebuffer_.end();
         if (itFB != viewToFramebuffer_.end()) {
             fb = itFB->second;
-        } else {
+        } else if (ngxStage_ >= 2) {
             VkImageView attachments[1] = { targetView };
             VkFramebufferCreateInfo fbInfo{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
             fbInfo.renderPass = rp;
@@ -1081,7 +1108,7 @@ private:
             viewToFramebuffer_[targetView] = fb;
         }
 
-        if (fb == VK_NULL_HANDLE)
+        if (ngxStage_ >= 2 && fb == VK_NULL_HANDLE)
             return evalRes;
 
         // Transition NGX output to COLOR_ATTACHMENT for overlay
@@ -1109,9 +1136,14 @@ private:
         rpBegin.renderArea.offset = { 0, 0 };
         rpBegin.renderArea.extent = { targetW, targetH };
 
-        vkCmdBeginRenderPass(InCmdList, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
-        auto drawn = injectImGuiIntoCommandBuffer(InCmdList, overlayPipeline);
-        vkCmdEndRenderPass(InCmdList);
+        bool drawn = false;
+        if (ngxStage_ >= 2) {
+            vkCmdBeginRenderPass(InCmdList, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+            if (ngxStage_ >= 3) {
+                drawn = injectImGuiIntoCommandBuffer(InCmdList, overlayPipeline);
+            }
+            vkCmdEndRenderPass(InCmdList);
+        }
 
         if (drawn) {
             // Claim this frame so presentPreHook() does not render the same draw data a second
@@ -1319,6 +1351,8 @@ private:
     // Set when the NGX hook composites the overlay; consumed by the present hook so a frame is
     // never rendered twice.
     bool ngxCompositedThisFrame_{ false };
+    // BG3SE_NGX_STAGE override; -1 until resolved from the environment.
+    int ngxStage_{ -1 };
 
     SwapchainInfo swapchain_;
     uint32_t textures_{ 0 };
