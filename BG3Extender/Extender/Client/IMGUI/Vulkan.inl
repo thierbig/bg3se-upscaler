@@ -215,7 +215,14 @@ public:
         init_info.DescriptorPool = descriptorPool_;
         init_info.Subpass = 0;
         init_info.MinImageCount = swapchain_.images_.size();
-        init_info.ImageCount = swapchain_.images_.size();
+        // ImGui rotates its vertex/index buffers through a ring of ImageCount slots, one per
+        // RenderDrawData call, assuming the GPU is at most ImageCount frames behind. Frame
+        // generation queues presents deeper than the swapchain image count, so a slot can be
+        // rewritten while a command buffer from several frames ago is still reading it -
+        // corrupted geometry on screen, and a device loss when the stale index data runs off the
+        // end of the vertex buffer. Deepen the ring so FG latency fits inside it; the cost is a
+        // few extra small per-frame buffers.
+        init_info.ImageCount = swapchain_.images_.size() * 4;
         init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
         init_info.Allocator = nullptr;
         init_info.CheckVkResultFn = [](VkResult err) {
