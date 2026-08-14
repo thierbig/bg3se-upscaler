@@ -249,6 +249,10 @@ public:
 
         IMGUI_DEBUG("VK shutdown");
 
+        // Must run before ImGui_ImplVulkan_Shutdown(), which takes the backend data our pipeline
+        // helper needs.
+        resetNgxResources();
+
         ImGui_ImplVulkan_Shutdown();
         drawViewport_ = -1;
         initialized_ = false;
@@ -1196,6 +1200,37 @@ private:
         return true;
     }
 
+    // Drop everything the composite cached. The ImGui backend is torn down and rebuilt whenever
+    // the swapchain is recreated - alt-tabbing does it - and NGX recreates its own resources at
+    // the same time, so nothing built against the old ones stays valid. frameNo_ also restarts
+    // at 0 on re-init, which by itself would stop framebuffers ever retiring again.
+    void resetNgxResources()
+    {
+        if (device_ != VK_NULL_HANDLE) {
+            vkDeviceWaitIdle(device_);
+
+            for (auto const& fb : ngxFramebuffers_) {
+                vkDestroyFramebuffer(device_, fb.Framebuffer, nullptr);
+            }
+
+            for (auto const& pipeline : formatToPipeline_) {
+                if (pipeline.second != VK_NULL_HANDLE) {
+                    ImGui_ImplVulkan_DestroyPipelineForRenderPass(pipeline.second);
+                }
+            }
+
+            for (auto const& renderPass : formatToRenderPass_) {
+                if (renderPass.second != VK_NULL_HANDLE) {
+                    vkDestroyRenderPass(device_, renderPass.second, nullptr);
+                }
+            }
+        }
+
+        ngxFramebuffers_.clear();
+        formatToPipeline_.clear();
+        formatToRenderPass_.clear();
+    }
+
     // Destroy NGX framebuffers the GPU has certainly finished with. Called under the backend
     // lock from the composite path.
     void retireStaleNgxFramebuffers()
@@ -1207,7 +1242,8 @@ private:
 
         auto it = ngxFramebuffers_.begin();
         while (it != ngxFramebuffers_.end()) {
-            if (frameNo_ - it->FrameNo > NgxFramebufferLifetime) {
+            auto age = frameNo_ - it->FrameNo;
+            if (age > NgxFramebufferLifetime || age < 0) {
                 vkDestroyFramebuffer(device_, it->Framebuffer, nullptr);
                 it = ngxFramebuffers_.erase(it);
             } else {
