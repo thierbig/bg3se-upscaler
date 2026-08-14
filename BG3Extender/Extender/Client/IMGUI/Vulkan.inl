@@ -1091,11 +1091,14 @@ private:
                 return evalRes;
         }
 
-        // Get/create framebuffer for this view
-        auto itFB = ngxStage_ >= 2 ? viewToFramebuffer_.find(targetView) : viewToFramebuffer_.end();
-        if (itFB != viewToFramebuffer_.end()) {
-            fb = itFB->second;
-        } else if (ngxStage_ >= 2) {
+        if (ngxStage_ >= 2) {
+            // NGX rotates through several output image views, and Vulkan is free to reuse a
+            // handle value once the view behind it is destroyed. Caching a framebuffer against
+            // a VkImageView therefore hands us, sooner or later, a framebuffer built from a view
+            // that no longer exists - which faults the GPU. Build one per composite and retire it
+            // a few frames later, once the GPU is certainly past it.
+            retireStaleNgxFramebuffers();
+
             VkImageView attachments[1] = { targetView };
             VkFramebufferCreateInfo fbInfo{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
             fbInfo.renderPass = rp;
@@ -1105,7 +1108,10 @@ private:
             fbInfo.height = targetH;
             fbInfo.layers = 1;
             VK_CHECK(vkCreateFramebuffer(device_, &fbInfo, nullptr, &fb));
-            viewToFramebuffer_[targetView] = fb;
+
+            if (fb != VK_NULL_HANDLE) {
+                ngxFramebuffers_.push_back({ fb, frameNo_ });
+            }
         }
 
         if (ngxStage_ >= 2 && fb == VK_NULL_HANDLE)
@@ -1188,6 +1194,26 @@ private:
             return false;
         ImGui_ImplVulkan_RenderDrawData(&vp.DrawDataP, cmd, pipeline);
         return true;
+    }
+
+    // Destroy NGX framebuffers the GPU has certainly finished with. Called under the backend
+    // lock from the composite path.
+    void retireStaleNgxFramebuffers()
+    {
+        if (device_ == VK_NULL_HANDLE) {
+            ngxFramebuffers_.clear();
+            return;
+        }
+
+        auto it = ngxFramebuffers_.begin();
+        while (it != ngxFramebuffers_.end()) {
+            if (frameNo_ - it->FrameNo > NgxFramebufferLifetime) {
+                vkDestroyFramebuffer(device_, it->Framebuffer, nullptr);
+                it = ngxFramebuffers_.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 
     // ImGui builds its pipeline against the swapchain render pass, but the NGX output is a
@@ -1323,7 +1349,16 @@ private:
     HashMap<VkImageView, VkDescriptorSet> textureDescriptors_;
     std::unordered_map<VkFormat, VkRenderPass> formatToRenderPass_;
     std::unordered_map<VkFormat, VkPipeline> formatToPipeline_;
-    std::unordered_map<VkImageView, VkFramebuffer> viewToFramebuffer_;
+    // Framebuffers built for NGX output views, retired once the GPU is well past them. Keyed by
+    // creation frame rather than by image view, which is not a stable identity.
+    struct NgxFramebuffer
+    {
+        VkFramebuffer Framebuffer;
+        int32_t FrameNo;
+    };
+
+    static constexpr int32_t NgxFramebufferLifetime{ 8 };
+    std::vector<NgxFramebuffer> ngxFramebuffers_;
 
     VkCreateInstanceHookType CreateInstanceHook_;
     VkCreateDeviceHookType CreateDeviceHook_;
