@@ -972,18 +972,18 @@ private:
         if (!initialized_ || drawViewport_ < 0)
             return evalRes;
 
-        // DIAGNOSTIC (temporary): BG3SE_NGX_STAGE bisects the composite without a rebuild.
+        // DIAGNOSTIC (temporary): NgxOverlayStage bisects the composite without a rebuild.
         //   0 = do nothing              (control - is the composite the cause at all?)
         //   1 = layout barriers only    (tests the VK_IMAGE_LAYOUT_GENERAL assumption)
         //   2 = + render pass, no draw  (tests the framebuffer / render pass)
         //   3 = + ImGui draw            (full, default)
+        // Set via NgxOverlayStage in ScriptExtenderSettings.json.
         if (ngxStage_ < 0) {
-            wchar_t buf[16]{};
-            auto len = GetEnvironmentVariableW(L"BG3SE_NGX_STAGE", buf, (DWORD)std::size(buf));
-            ngxStage_ = (len > 0 && len < std::size(buf)) ? _wtoi(buf) : 3;
+            ngxStage_ = (int)gExtender->GetConfig().NgxOverlayStage;
             if (ngxStage_ < 0 || ngxStage_ > 3) ngxStage_ = 3;
             INFO("IMGUI: NGX composite stage %d "
-                "(0=off 1=barriers 2=+renderpass 3=full) - set BG3SE_NGX_STAGE to change",
+                "(0=off 1=barriers 2=+renderpass 3=full) - set NgxOverlayStage in "
+                "ScriptExtenderSettings.json to change",
                 ngxStage_);
         }
 

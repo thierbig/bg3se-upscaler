@@ -11,6 +11,7 @@ void ConfigGet(Value& node, char const* key, ProfilerThreshold& value)
 
 void ApplyConfig(ExtenderConfig& config, Document& root)
 {
+    ConfigGet(root, "NgxOverlayStage", config.NgxOverlayStage);
     ConfigGet(root, "CreateConsole", config.CreateConsole);
     ConfigGet(root, "DefaultToClientConsole", config.DefaultToClientConsole);
     ConfigGet(root, "EnableLogging", config.EnableLogging);
