@@ -994,6 +994,16 @@ private:
         if (ngxStage_ == 0)
             return evalRes;
 
+        // Stay clear of swapchain transitions. Around an alt-tab the upscaler tears down and
+        // recreates its NGX resources; a composite recorded near that window can reference an
+        // output view whose image is destroyed before the command buffer completes. A barrier
+        // survives that (it only records a dependency); a LOAD_OP_LOAD render pass reads memory
+        // through the view and faults. frameNo_ restarts at 0 on every backend (re)init, so
+        // holding off for a second of frames keeps the composite out of the transition window.
+        // The present-path overlay covers the menu during warmup.
+        if (frameNo_ < NgxCompositeWarmupFrames)
+            return evalRes;
+
         // Resolve lazily and keep retrying until found - the providing module may not be loaded
         // yet the first time we get here, and caching a null would disable the overlay for good.
         if (ngxGetVoidPointer_ == nullptr) {
@@ -1410,6 +1420,7 @@ private:
 
     static constexpr int32_t NgxFramebufferLifetime{ 8 };
     static constexpr int32_t NgxGraveyardPurgeFrame{ 30 };
+    static constexpr int32_t NgxCompositeWarmupFrames{ 60 };
     std::vector<NgxFramebuffer> ngxFramebuffers_;
     std::vector<VkFramebuffer> ngxGraveyardFramebuffers_;
     std::vector<VkPipeline> ngxGraveyardPipelines_;
