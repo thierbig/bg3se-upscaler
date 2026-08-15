@@ -13,7 +13,6 @@
 #include <cstdlib>
 #include <vector>
 #include <psapi.h>
-#include <atomic>
 #include <Extender/Client/IMGUI/Streamline.h>
 
 #ifndef NVSDK_CONV
@@ -102,14 +101,6 @@ END_SE()
 
 BEGIN_NS(extui)
 
-// Set while a call routed into sl.interposer is in flight. Any entry into our loader-level
-// detours during that window - the interposer's own nested call on this thread, or
-// Streamline worker threads touching the patched entry points mid-initialization - must go
-// straight to the original function. Process-wide on purpose: a thread-local guard let SL's
-// internal threads re-enter the interposer through our wrapper while it was still
-// initializing, which ended in a call through a null hook-table entry.
-static std::atomic<bool> gSLRouteInFlight{ false };
-
 class VulkanBackend : public RenderingBackend
 {
 public:
@@ -157,43 +148,22 @@ public:
         // them.
     }
 
-    // The game calls the loader's vkCreateInstance, which we detour. On the outer leg we
-    // forward into the interposer's vkCreateInstance so Streamline can inject what it needs;
-    // the interposer then calls the loader again, re-entering this detour, and that inner leg
-    // must pass straight through to the original.
     VkResult vkCreateInstanceWrapped(
         VkCreateInstanceHookType::BaseFuncType* orig,
         const VkInstanceCreateInfo* pCreateInfo,
         const VkAllocationCallbacks* pAllocator,
         VkInstance* pInstance)
     {
-        if (gSLRouteInFlight.load(std::memory_order_acquire)) return orig(pCreateInfo, pAllocator, pInstance);
-
-        // Load + init deferred from EnableHooks (see comment there), and attempted exactly
-        // once: BG3 calls vkCreateInstance more than once, and retrying a failed slInit with
-        // half-loaded plugins crashes the process.
+        // Load + init deferred to here (NVAPI is dead earlier and an early-loaded interposer
+        // makes slInit refuse); attempted exactly once - retrying a failed slInit crashes.
         if (!slInitAttempted_) {
             slInitAttempted_ = true;
             if (streamline_.Load() && streamline_.Init()) {
                 sl_ = streamline_.Module();
-                dlssgPresentFunction_ = reinterpret_cast<PFN_vkQueuePresentKHR>(
-                    GetProcAddress(sl_, "vkQueuePresentKHR"));
-                dlssgCreateSwapchainKHR_ = reinterpret_cast<PFN_vkCreateSwapchainKHR>(
-                    GetProcAddress(sl_, "vkCreateSwapchainKHR"));
             }
         }
 
-        VkResult result;
-        auto proxy = streamline_.CreateInstanceProxy();
-        if (proxy != nullptr) {
-            gSLRouteInFlight.store(true, std::memory_order_release);
-            result = proxy(pCreateInfo, pAllocator, pInstance);
-            gSLRouteInFlight.store(false, std::memory_order_release);
-            INFO("SL: instance creation routed through interposer -> %d", result);
-        } else {
-            result = orig(pCreateInfo, pAllocator, pInstance);
-        }
-
+        auto result = orig(pCreateInfo, pAllocator, pInstance);
         vkCreateInstanceHooked(pCreateInfo, pAllocator, pInstance, result);
         return result;
     }
@@ -205,22 +175,10 @@ public:
         const VkAllocationCallbacks* pAllocator,
         VkDevice* pDevice)
     {
-        if (gSLRouteInFlight.load(std::memory_order_acquire)) return orig(physicalDevice, pCreateInfo, pAllocator, pDevice);
-
-        VkResult result;
-        auto proxy = streamline_.CreateDeviceProxy();
-        if (proxy != nullptr) {
-            gSLRouteInFlight.store(true, std::memory_order_release);
-            result = proxy(physicalDevice, pCreateInfo, pAllocator, pDevice);
-            gSLRouteInFlight.store(false, std::memory_order_release);
-            INFO("SL: device creation routed through interposer -> %d", result);
-        } else {
-            result = orig(physicalDevice, pCreateInfo, pAllocator, pDevice);
-        }
-
+        auto result = orig(physicalDevice, pCreateInfo, pAllocator, pDevice);
         vkCreateDeviceHooked(physicalDevice, pCreateInfo, pAllocator, pDevice, result);
-        streamline_.FlushBootLog();
         if (result == VK_SUCCESS) {
+            streamline_.FlushBootLog();
             streamline_.LogFeatureSupport(physicalDevice);
         }
         return result;

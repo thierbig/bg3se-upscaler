@@ -11,6 +11,7 @@
 // activation yet.
 
 #include <External/streamline/include/sl.h>
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <share.h>
@@ -117,10 +118,7 @@ public:
         slGetFeatureVersion_ = GetProc<PFun_slGetFeatureVersion>("slGetFeatureVersion");
         slGetFeatureRequirements_ = GetProc<PFun_slGetFeatureRequirements>("slGetFeatureRequirements");
 
-        vkCreateInstanceProxy_ = reinterpret_cast<PFN_vkCreateInstance>(GetProcAddress(module_, "vkCreateInstance"));
-        vkCreateDeviceProxy_ = reinterpret_cast<PFN_vkCreateDevice>(GetProcAddress(module_, "vkCreateDevice"));
-
-        if (!slInit_ || !slIsFeatureSupported_ || !vkCreateInstanceProxy_ || !vkCreateDeviceProxy_) {
+        if (!slInit_ || !slIsFeatureSupported_) {
             Note("SL: ERROR: sl.interposer.dll is missing expected exports; Streamline disabled");
             module_ = nullptr;
             return false;
@@ -145,7 +143,8 @@ public:
         // OTA off again, deliberately: we now ship a version-matched 2.12.0 runtime
         // (interposer + plugins + nvngx_dlssg from the SDK release), and the crash this
         // replaces came precisely from mixing the interposer with newer OTA plugins.
-        pref.flags = sl::PreferenceFlags::eDisableCLStateTracking;
+        pref.flags = sl::PreferenceFlags::eDisableCLStateTracking
+            | sl::PreferenceFlags::eUseManualHooking;
         pref.featuresToLoad = features;
         pref.numFeaturesToLoad = (uint32_t)std::size(features);
         // 0xE658703: the app id family NVIDIA's driver/NGX on this machine already serves
@@ -170,6 +169,37 @@ public:
 
         Note("SL: slInit ok (SDK headers %u.%u.%u)", SL_VERSION_MAJOR, SL_VERSION_MINOR, SL_VERSION_PATCH);
         initialized_ = true;
+
+        static sl::Feature const wanted[] = { sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL };
+        auto addUnique = [](std::vector<std::string>& into, char const* value) {
+            for (auto const& existing : into) if (existing == value) return;
+            into.push_back(value);
+        };
+        for (auto feature : wanted) {
+            sl::FeatureRequirements req{};
+            auto reqResult = slGetFeatureRequirements_ ? slGetFeatureRequirements_(feature, req) : sl::Result::eErrorNotInitialized;
+            if (reqResult != sl::Result::eOk) {
+                Note("SL: WARN: slGetFeatureRequirements(%u) -> %d", feature, (int)reqResult);
+                continue;
+            }
+            for (uint32_t i = 0; i < req.vkNumInstanceExtensions; i++) addUnique(requirements_.instanceExtensions, req.vkInstanceExtensions[i]);
+            for (uint32_t i = 0; i < req.vkNumDeviceExtensions; i++) addUnique(requirements_.deviceExtensions, req.vkDeviceExtensions[i]);
+            for (uint32_t i = 0; i < req.vkNumFeatures12; i++) addUnique(requirements_.features12, req.vkFeatures12[i]);
+            for (uint32_t i = 0; i < req.vkNumFeatures13; i++) addUnique(requirements_.features13, req.vkFeatures13[i]);
+            requirements_.graphicsQueues = std::max(requirements_.graphicsQueues, req.vkNumGraphicsQueuesRequired);
+            requirements_.computeQueues = std::max(requirements_.computeQueues, req.vkNumComputeQueuesRequired);
+            requirements_.opticalFlowQueues = std::max(requirements_.opticalFlowQueues, req.vkNumOpticalFlowQueuesRequired);
+        }
+        requirements_.valid = true;
+        Note("SL: requirements: %u instance ext, %u device ext, %u feat12, %u feat13, queues g=%u c=%u ofa=%u",
+            (unsigned)requirements_.instanceExtensions.size(), (unsigned)requirements_.deviceExtensions.size(),
+            (unsigned)requirements_.features12.size(), (unsigned)requirements_.features13.size(),
+            requirements_.graphicsQueues, requirements_.computeQueues, requirements_.opticalFlowQueues);
+        for (auto const& e : requirements_.instanceExtensions) Note("SL:   instance ext: %s", e.c_str());
+        for (auto const& e : requirements_.deviceExtensions) Note("SL:   device ext: %s", e.c_str());
+        for (auto const& f : requirements_.features12) Note("SL:   feature12: %s", f.c_str());
+        for (auto const& f : requirements_.features13) Note("SL:   feature13: %s", f.c_str());
+
         return true;
     }
 
@@ -204,10 +234,29 @@ public:
         }
     }
 
-    bool Ready() const { return initialized_; }
+    struct OwnedRequirements
+    {
+        std::vector<std::string> instanceExtensions;
+        std::vector<std::string> deviceExtensions;
+        std::vector<std::string> features12;
+        std::vector<std::string> features13;
+        uint32_t graphicsQueues{ 0 };
+        uint32_t computeQueues{ 0 };
+        uint32_t opticalFlowQueues{ 0 };
+        bool valid{ false };
+    };
+
+    OwnedRequirements const& Requirements() const { return requirements_; }
+
+    void Disable(char const* reason)
+    {
+        if (disabled_) return;
+        disabled_ = true;
+        Note("SL: ERROR: disabled for this session: %s", reason);
+    }
+
+    bool Ready() const { return initialized_ && !disabled_; }
     HMODULE Module() const { return module_; }
-    PFN_vkCreateInstance CreateInstanceProxy() const { return initialized_ ? vkCreateInstanceProxy_ : nullptr; }
-    PFN_vkCreateDevice CreateDeviceProxy() const { return initialized_ ? vkCreateDeviceProxy_ : nullptr; }
 
 private:
     template <class T>
@@ -241,6 +290,8 @@ private:
     std::wstring streamlineDir_;
     bool initialized_{ false };
     bool featureSupportLogged_{ false };
+    bool disabled_{ false };
+    OwnedRequirements requirements_;
 
     PFun_slInit* slInit_{ nullptr };
     PFun_slShutdown* slShutdown_{ nullptr };
@@ -248,9 +299,6 @@ private:
     PFun_slIsFeatureLoaded* slIsFeatureLoaded_{ nullptr };
     PFun_slGetFeatureVersion* slGetFeatureVersion_{ nullptr };
     PFun_slGetFeatureRequirements* slGetFeatureRequirements_{ nullptr };
-
-    PFN_vkCreateInstance vkCreateInstanceProxy_{ nullptr };
-    PFN_vkCreateDevice vkCreateDeviceProxy_{ nullptr };
 };
 
 END_NS()
