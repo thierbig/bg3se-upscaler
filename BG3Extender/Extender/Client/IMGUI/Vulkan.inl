@@ -183,6 +183,7 @@ public:
                 (unsigned)(extensions.size() - pCreateInfo->enabledExtensionCount));
             result = orig(&extended, pAllocator, pInstance);
             if (result != VK_SUCCESS) {
+                INFO("SL: extended vkCreateInstance failed: %d - retrying vanilla", (int)result);
                 streamline_.Disable("extended vkCreateInstance failed, retrying vanilla");
                 result = orig(pCreateInfo, pAllocator, pInstance);
             }
@@ -216,10 +217,12 @@ public:
             }
 
             // --- features 1.2/1.3: mutate-and-restore or prepend ---
-            auto slF12 = sl::getVkPhysicalDeviceVulkan12Features((uint32_t)reqs.features12.size(),
-                [&] { static std::vector<char const*> v; v.clear(); for (auto const& f : reqs.features12) v.push_back(f.c_str()); return v.data(); }());
-            auto slF13 = sl::getVkPhysicalDeviceVulkan13Features((uint32_t)reqs.features13.size(),
-                [&] { static std::vector<char const*> v; v.clear(); for (auto const& f : reqs.features13) v.push_back(f.c_str()); return v.data(); }());
+            std::vector<char const*> f12Names;
+            for (auto const& f : reqs.features12) f12Names.push_back(f.c_str());
+            std::vector<char const*> f13Names;
+            for (auto const& f : reqs.features13) f13Names.push_back(f.c_str());
+            auto slF12 = sl::getVkPhysicalDeviceVulkan12Features((uint32_t)reqs.features12.size(), f12Names.data());
+            auto slF13 = sl::getVkPhysicalDeviceVulkan13Features((uint32_t)reqs.features13.size(), f13Names.data());
 
             VkPhysicalDeviceVulkan12Features* gameF12{ nullptr };
             VkPhysicalDeviceVulkan13Features* gameF13{ nullptr };
@@ -333,6 +336,8 @@ public:
                     slQueueSlots_.opticalFlowFamily, slQueueSlots_.opticalFlowIndex);
                 result = orig(physicalDevice, &extended, pAllocator, pDevice);
                 if (result != VK_SUCCESS) {
+                    INFO("SL: extended vkCreateDevice failed: %d (added %u ext) - retrying vanilla",
+                        (int)result, (unsigned)(extensions.size() - pCreateInfo->enabledExtensionCount));
                     streamline_.Disable("extended vkCreateDevice failed, retrying vanilla");
                     restoreGameFeatures();
                     result = orig(physicalDevice, pCreateInfo, pAllocator, pDevice);
@@ -731,33 +736,6 @@ private:
             vkGetDeviceProcAddr(*pDevice, "vkDestroySwapchainKHR"));
         PFN_vkQueuePresentKHR gameQueuePresentKHR = reinterpret_cast<PFN_vkQueuePresentKHR>(
             vkGetDeviceProcAddr(*pDevice, "vkQueuePresentKHR"));
-
-        // Streamline loads as part of the game's Vulkan init, so it is normally not present yet
-        // when EnableHooks() runs; the LoadLibraryW() there also only succeeds if the upscaler
-        // ships sl.interposer.dll somewhere on the DLL search path. Resolve again here, where it
-        // is loaded and GetModuleHandleW finds it whatever folder it came from. Without this we
-        // silently fall back to the game's own entry points, bypassing Streamline's swapchain
-        // proxy - DLSS upscaling still works, but frame generation never gets injected.
-        if (streamline_.Ready()) {
-            if (sl_ == nullptr) {
-                sl_ = GetModuleHandleW(L"sl.interposer.dll");
-                if (sl_ != nullptr) {
-                    dlssgPresentFunction_ = reinterpret_cast<PFN_vkQueuePresentKHR>(
-                        GetProcAddress(sl_, "vkQueuePresentKHR"));
-                    dlssgCreateSwapchainKHR_ = reinterpret_cast<PFN_vkCreateSwapchainKHR>(
-                        GetProcAddress(sl_, "vkCreateSwapchainKHR"));
-                }
-            }
-
-            if (dlssgPresentFunction_ != nullptr && dlssgCreateSwapchainKHR_ != nullptr) {
-                INFO("IMGUI: chaining present/swapchain through sl.interposer.dll");
-            } else {
-                WARN("IMGUI: sl.interposer.dll not available at device creation (handle %p, present %p, "
-                    "createSwapchain %p); hooking the game's entry points directly - DLSS frame "
-                    "generation will not be injected",
-                    sl_, dlssgPresentFunction_, dlssgCreateSwapchainKHR_);
-            }
-        }
 
         PFN_vkQueuePresentKHR nextPresent = dlssgPresentFunction_ ? dlssgPresentFunction_ : gameQueuePresentKHR;
         PFN_vkCreateSwapchainKHR nextCreateSwapchain = dlssgCreateSwapchainKHR_ ? dlssgCreateSwapchainKHR_ : gameCreateSwapchainKHR;

@@ -12,6 +12,8 @@
 
 #include <External/streamline/include/sl.h>
 #include <External/streamline/include/sl_helpers_vk.h>
+#include <vulkan/vulkan.h>
+#include <Extender/ScriptExtender.h>
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
@@ -140,7 +142,7 @@ public:
             return false;
         }
 
-        Note("SL: interposer loaded from %s", streamlineDir_.empty() ? "search path" : "UpscalerBasePlugin\\Streamline");
+        Note("SL: interposer loaded from %S", streamlineDir_.empty() ? L"(search path)" : streamlineDir_.c_str());
         return true;
     }
 
@@ -221,7 +223,7 @@ public:
 
     void LogFeatureSupport(VkPhysicalDevice physicalDevice)
     {
-        if (!initialized_ || featureSupportLogged_) return;
+        if (!Ready() || featureSupportLogged_) return;
         featureSupportLogged_ = true;
 
         sl::AdapterInfo adapter{};
