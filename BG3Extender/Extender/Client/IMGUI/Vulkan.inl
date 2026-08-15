@@ -200,7 +200,140 @@ public:
         const VkAllocationCallbacks* pAllocator,
         VkDevice* pDevice)
     {
-        auto result = orig(physicalDevice, pCreateInfo, pAllocator, pDevice);
+        VkResult result;
+        auto const& reqs = streamline_.Requirements();
+        if (streamline_.Ready() && reqs.valid) {
+            // --- extensions (additive, dedup) ---
+            std::vector<char const*> extensions(
+                pCreateInfo->ppEnabledExtensionNames,
+                pCreateInfo->ppEnabledExtensionNames + pCreateInfo->enabledExtensionCount);
+            for (auto const& wanted : reqs.deviceExtensions) {
+                bool present = false;
+                for (auto existing : extensions) {
+                    if (wanted == existing) { present = true; break; }
+                }
+                if (!present) extensions.push_back(wanted.c_str());
+            }
+
+            // --- features 1.2/1.3: mutate-and-restore or prepend ---
+            auto slF12 = sl::getVkPhysicalDeviceVulkan12Features((uint32_t)reqs.features12.size(),
+                [&] { static std::vector<char const*> v; v.clear(); for (auto const& f : reqs.features12) v.push_back(f.c_str()); return v.data(); }());
+            auto slF13 = sl::getVkPhysicalDeviceVulkan13Features((uint32_t)reqs.features13.size(),
+                [&] { static std::vector<char const*> v; v.clear(); for (auto const& f : reqs.features13) v.push_back(f.c_str()); return v.data(); }());
+
+            VkPhysicalDeviceVulkan12Features* gameF12{ nullptr };
+            VkPhysicalDeviceVulkan13Features* gameF13{ nullptr };
+            for (auto node = (VkBaseOutStructure*)pCreateInfo->pNext; node; node = node->pNext) {
+                if (node->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES) gameF12 = (VkPhysicalDeviceVulkan12Features*)node;
+                if (node->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES) gameF13 = (VkPhysicalDeviceVulkan13Features*)node;
+            }
+
+            // OR VkBool32 payloads (skip sType+pNext header) into dst; returns saved copy.
+            auto orFeatures = [](void* dst, void const* src, size_t size) {
+                std::vector<uint8_t> saved((uint8_t*)dst, (uint8_t*)dst + size);
+                auto* d = (uint32_t*)((uint8_t*)dst + offsetof(VkPhysicalDeviceVulkan12Features, samplerMirrorClampToEdge));
+                auto* s = (uint32_t const*)((uint8_t const*)src + offsetof(VkPhysicalDeviceVulkan12Features, samplerMirrorClampToEdge));
+                auto count = (size - offsetof(VkPhysicalDeviceVulkan12Features, samplerMirrorClampToEdge)) / sizeof(uint32_t);
+                for (size_t i = 0; i < count; i++) d[i] |= s[i];
+                return saved;
+            };
+
+            std::vector<uint8_t> savedF12, savedF13;
+            if (gameF12 != nullptr) savedF12 = orFeatures(gameF12, &slF12, sizeof(slF12));
+            if (gameF13 != nullptr) {
+                std::vector<uint8_t> saved((uint8_t*)gameF13, (uint8_t*)gameF13 + sizeof(*gameF13));
+                auto* d = (VkBool32*)&gameF13->robustImageAccess;
+                auto* s = (VkBool32 const*)&slF13.robustImageAccess;
+                auto count = (sizeof(*gameF13) - offsetof(VkPhysicalDeviceVulkan13Features, robustImageAccess)) / sizeof(VkBool32);
+                for (size_t i = 0; i < count; i++) d[i] |= s[i];
+                savedF13 = std::move(saved);
+            }
+
+            VkDeviceCreateInfo extended = *pCreateInfo;
+            // Prepend structs the game does not chain (head insertion, no cloning).
+            if (gameF12 == nullptr && !reqs.features12.empty()) { slF12.pNext = const_cast<void*>(extended.pNext); extended.pNext = &slF12; }
+            if (gameF13 == nullptr && !reqs.features13.empty()) { slF13.pNext = const_cast<void*>(extended.pNext); extended.pNext = &slF13; }
+
+            // --- queues: extend counts, record SL slots ---
+            uint32_t familyCount{ 0 };
+            vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount, nullptr);
+            std::vector<VkQueueFamilyProperties> families(familyCount);
+            vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount, families.data());
+
+            auto findFamily = [&](VkQueueFlags required, VkQueueFlags preferAbsent) -> uint32_t {
+                uint32_t fallback = ~0u;
+                for (uint32_t i = 0; i < familyCount; i++) {
+                    if ((families[i].queueFlags & required) != required) continue;
+                    if ((families[i].queueFlags & preferAbsent) == 0) return i;
+                    if (fallback == ~0u) fallback = i;
+                }
+                return fallback;
+            };
+
+            std::vector<VkDeviceQueueCreateInfo> queues(
+                pCreateInfo->pQueueCreateInfos,
+                pCreateInfo->pQueueCreateInfos + pCreateInfo->queueCreateInfoCount);
+            std::vector<std::vector<float>> priorityStorage;
+            bool queueFailure = false;
+
+            auto addQueues = [&](uint32_t family, uint32_t extra, uint32_t& outIndex) {
+                if (extra == 0 || family == ~0u) { if (extra > 0) queueFailure = true; return; }
+                for (auto& q : queues) {
+                    if (q.queueFamilyIndex != family) continue;
+                    if (q.queueCount + extra > families[family].queueCount) { queueFailure = true; return; }
+                    outIndex = q.queueCount;
+                    priorityStorage.emplace_back(q.queueCount + extra, 1.0f);
+                    if (q.pQueuePriorities != nullptr)
+                        std::copy(q.pQueuePriorities, q.pQueuePriorities + q.queueCount, priorityStorage.back().begin());
+                    q.queueCount += extra;
+                    q.pQueuePriorities = priorityStorage.back().data();
+                    return;
+                }
+                if (extra > families[family].queueCount) { queueFailure = true; return; }
+                outIndex = 0;
+                priorityStorage.emplace_back(extra, 1.0f);
+                queues.push_back(VkDeviceQueueCreateInfo{ VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                    nullptr, 0, family, extra, priorityStorage.back().data() });
+            };
+
+            slQueueSlots_ = {};
+            slQueueSlots_.graphicsFamily = findFamily(VK_QUEUE_GRAPHICS_BIT, 0);
+            addQueues(slQueueSlots_.graphicsFamily, reqs.graphicsQueues, slQueueSlots_.graphicsIndex);
+            slQueueSlots_.computeFamily = findFamily(VK_QUEUE_COMPUTE_BIT, VK_QUEUE_GRAPHICS_BIT);
+            addQueues(slQueueSlots_.computeFamily, reqs.computeQueues, slQueueSlots_.computeIndex);
+            if (reqs.opticalFlowQueues > 0) {
+                slQueueSlots_.opticalFlowFamily = findFamily(VK_QUEUE_OPTICAL_FLOW_BIT_NV, 0);
+                slQueueSlots_.opticalFlowNative = slQueueSlots_.opticalFlowFamily != ~0u;
+                addQueues(slQueueSlots_.opticalFlowFamily, reqs.opticalFlowQueues, slQueueSlots_.opticalFlowIndex);
+            }
+
+            extended.enabledExtensionCount = (uint32_t)extensions.size();
+            extended.ppEnabledExtensionNames = extensions.data();
+            extended.queueCreateInfoCount = (uint32_t)queues.size();
+            extended.pQueueCreateInfos = queues.data();
+
+            if (queueFailure) {
+                streamline_.Disable("required SL queue does not fit family limits");
+                result = orig(physicalDevice, pCreateInfo, pAllocator, pDevice);
+            } else {
+                INFO("SL: device create extended: +%u ext, queues g=%u@%u c=%u@%u ofa=%u@%u",
+                    (unsigned)(extensions.size() - pCreateInfo->enabledExtensionCount),
+                    slQueueSlots_.graphicsFamily, slQueueSlots_.graphicsIndex,
+                    slQueueSlots_.computeFamily, slQueueSlots_.computeIndex,
+                    slQueueSlots_.opticalFlowFamily, slQueueSlots_.opticalFlowIndex);
+                result = orig(physicalDevice, &extended, pAllocator, pDevice);
+                if (result != VK_SUCCESS) {
+                    streamline_.Disable("extended vkCreateDevice failed, retrying vanilla");
+                    result = orig(physicalDevice, pCreateInfo, pAllocator, pDevice);
+                }
+            }
+
+            // Restore game-owned structs regardless of outcome.
+            if (gameF12 != nullptr) std::copy(savedF12.begin(), savedF12.end(), (uint8_t*)gameF12);
+            if (gameF13 != nullptr) std::copy(savedF13.begin(), savedF13.end(), (uint8_t*)gameF13);
+        } else {
+            result = orig(physicalDevice, pCreateInfo, pAllocator, pDevice);
+        }
         vkCreateDeviceHooked(physicalDevice, pCreateInfo, pAllocator, pDevice, result);
         if (result == VK_SUCCESS) {
             streamline_.FlushBootLog();
@@ -591,7 +724,7 @@ private:
         // is loaded and GetModuleHandleW finds it whatever folder it came from. Without this we
         // silently fall back to the game's own entry points, bypassing Streamline's swapchain
         // proxy - DLSS upscaling still works, but frame generation never gets injected.
-        if (gExtender->GetConfig().StreamlineEnabled) {
+        if (streamline_.Ready()) {
             if (sl_ == nullptr) {
                 sl_ = GetModuleHandleW(L"sl.interposer.dll");
                 if (sl_ != nullptr) {
@@ -1510,6 +1643,16 @@ private:
 
     StreamlineManager streamline_;
     bool slInitAttempted_{ false };
+    struct SLQueueSlots
+    {
+        uint32_t graphicsFamily{ ~0u };
+        uint32_t graphicsIndex{};
+        uint32_t computeFamily{ ~0u };
+        uint32_t computeIndex{};
+        uint32_t opticalFlowFamily{ ~0u };
+        uint32_t opticalFlowIndex{};
+        bool opticalFlowNative{};
+    } slQueueSlots_;
     HMODULE sl_{ nullptr };
     PFN_vkQueuePresentKHR dlssgPresentFunction_{ nullptr };
     PFN_vkCreateSwapchainKHR dlssgCreateSwapchainKHR_{ nullptr };

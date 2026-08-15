@@ -11,6 +11,7 @@
 // activation yet.
 
 #include <External/streamline/include/sl.h>
+#include <External/streamline/include/sl_helpers_vk.h>
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>

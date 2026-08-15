@@ -95,12 +95,12 @@ game's `VkInstanceCreateInfo`. Original struct untouched; copy passed to `orig`.
 - *Extensions*: same union/dedup/append as instance.
 - *Features*: for the 1.2/1.3 feature names in requirements, build
   `VkPhysicalDeviceVulkan12Features` / `...13Features` via `sl_helpers_vk.h`'s
-  `getVkPhysicalDeviceVulkan12Features`/`13`. Walk the game's existing `pNext` chain:
-  if the game already chains the corresponding struct, clone the chain prefix up to
-  and including that node, OR the required booleans into the clone, and relink -
-  downstream nodes are reused untouched, and the game's own structs are never
-  modified; only if the struct is absent, append SL's copy to the (cloned) chain
-  head.
+  `getVkPhysicalDeviceVulkan12Features`/`13`. If the game's `pNext` chain already
+  contains the corresponding struct, OR the required booleans into it in place,
+  restoring the saved values immediately after the `orig` call returns
+  (mutate-and-restore: bounded to the call, single-threaded, invisible to the game);
+  only if the struct is absent, prepend SL's copy at the head of the copied
+  create-info's chain.
 - *Queues*: SL needs extra queues (`graphics`, `compute`, `opticalFlow` counts). For
   each, find the family (graphics: the game's graphics family; compute: dedicated
   compute family if present; optical flow: family advertising
