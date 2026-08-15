@@ -65,6 +65,13 @@ struct ExtenderConfig
     bool StreamlineFGEnabled{ false };
     // Frames generated between rendered frames: 1=2x, 2=3x, 3=4x. Clamped to device max at runtime.
     uint32_t StreamlineFGFrames{ 1 };
+    // dlss-fg phase 2b tuning lever: one-shot Note() dump of the full sl::Constants (all matrices
+    // + scalars) the first time SubmitFrameData runs. Off by default - verbose.
+    bool StreamlineFGDebugConstants{ false };
+    // dlss-fg phase 2b tuning lever: force clipToPrevClip/prevClipToClip to identity, disabling
+    // reprojection. Used to isolate matrix-convention bugs (ghosting with real matrices but not
+    // with identity) from tag/depth bugs (ghosting either way).
+    bool StreamlineFGIdentityReproj{ false };
     uint32_t DebuggerPort{ 9999 };
     uint32_t LuaDebuggerPort{ 9998 };
     uint32_t DebugFlags{ 0 };

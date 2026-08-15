@@ -15,6 +15,8 @@ void ApplyConfig(ExtenderConfig& config, Document& root)
     ConfigGet(root, "StreamlineEnabled", config.StreamlineEnabled);
     ConfigGet(root, "StreamlineFGEnabled", config.StreamlineFGEnabled);
     ConfigGet(root, "StreamlineFGFrames", config.StreamlineFGFrames);
+    ConfigGet(root, "StreamlineFGDebugConstants", config.StreamlineFGDebugConstants);
+    ConfigGet(root, "StreamlineFGIdentityReproj", config.StreamlineFGIdentityReproj);
     ConfigGet(root, "CreateConsole", config.CreateConsole);
     ConfigGet(root, "DefaultToClientConsole", config.DefaultToClientConsole);
     ConfigGet(root, "EnableLogging", config.EnableLogging);

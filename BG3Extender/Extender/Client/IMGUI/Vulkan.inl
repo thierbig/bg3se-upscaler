@@ -1175,8 +1175,9 @@ private:
     }
 
     // Reads the DLSS-SR *input* resources/scalars NGX consumed on this EvaluateFeature call
-    // (depth, motion vectors, jitter offset, mv-scale, reset) into ngxInputs_, for a later task
-    // to tag/convert. Mirrors the existing "Output" read below: GetVoidPointer -> reinterpret as
+    // (depth, motion vectors, jitter offset, mv-scale, reset) into ngxInputs_, which the caller
+    // then hands to StreamlineManager::SubmitFrameData (Streamline.h) to tag for DLSS-G and
+    // convert into sl::Constants. Mirrors the existing "Output" read below: GetVoidPointer -> reinterpret as
     // NVSDK_NGX_Resource_VK* -> pull the Vulkan image/view/format/extent out of ImageViewInfo.
     // Read-only - never mutates InParameters, never touches the overlay's render pass/framebuffer/
     // pipeline caches (globalResourceLock_), and always-boots: any failed/null read just marks
@@ -1290,25 +1291,39 @@ private:
         const NVSDK_NGX_Parameter* InParameters,
         PFN_NVSDK_NGX_ProgressCallback_C InCallback)
     {
-        // Call original first so NGX completes its work and final image state
-        NVSDK_NGX_Result evalRes = orig(InCmdList, InFeatureHandle, InParameters, InCallback);
-
         if (!ngxHookEnteredLogged_) {
             ngxHookEnteredLogged_ = true;
             INFO("IMGUI: NGX EvaluateFeature hook is live");
         }
 
-        // Read DLSS-SR inputs (depth/mvec/jitter/mv-scale/reset) for a later task to tag/convert.
-        // Deliberately placed before the overlay's early-returns below (menuVisible_/ngxStage_/
-        // warmup) - frame generation needs every evaluated frame's inputs, not just frames where
-        // the debug overlay happens to draw. Inert unless FG is actually enabled; never blocks or
-        // alters the original NGX call either way.
+        // Read DLSS-SR inputs (depth/mvec/jitter/mv-scale/reset) and, for frame generation, tag
+        // depth+mvec and push camera constants to Streamline via SubmitFrameData - BEFORE calling
+        // the original NGX EvaluateFeature, so DLSS-G's tags/constants are set for this frame
+        // ahead of it (task-3 brief). Deliberately placed before the overlay's early-returns below
+        // (menuVisible_/ngxStage_/warmup) - frame generation needs every evaluated frame's inputs,
+        // not just frames where the debug overlay happens to draw. Inert unless FG is actually
+        // enabled; always-boots (fire-and-log via Note()) either way and never touches
+        // InParameters or anything orig() itself reads/writes.
+        //
+        // Note this used to run (Task 2) AFTER orig(), gated on evalRes == Success, mirroring the
+        // "Output" read further below - but Output genuinely needs orig() to have run (it's what
+        // NGX just produced), while Depth/MotionVectors/Jitter/MVScale/Reset are INPUT parameters
+        // the game populates on InParameters before calling EvaluateFeature at all, so reading
+        // them does not depend on orig() and moving this pre-orig() is safe. The evalRes gate is
+        // gone as a result (it isn't known yet here) - InParameters != nullptr is the only guard.
         {
             auto const& cfg = gExtender->GetConfig();
-            if (evalRes == NVSDK_NGX_Result_Success && InParameters && cfg.StreamlineEnabled && cfg.StreamlineFGEnabled) {
+            if (InParameters && cfg.StreamlineEnabled && cfg.StreamlineFGEnabled) {
                 readNgxFrameInputs(InParameters);
+
+                if (InCmdList && ngxInputs_.valid) {
+                    streamline_.SubmitFrameData(InCmdList, ngxInputs_, (uint32_t)frameNo_);
+                }
             }
         }
+
+        // Call original so NGX completes its work and final image state
+        NVSDK_NGX_Result evalRes = orig(InCmdList, InFeatureHandle, InParameters, InCallback);
 
         if (!initialized_ || !menuVisible_ || evalRes != NVSDK_NGX_Result_Success || !InCmdList || !InParameters)
             return evalRes;
@@ -1816,29 +1831,12 @@ private:
     int ngxStage_{ -1 };
 
     // DLSS-SR input resources/scalars read from the NGX EvaluateFeature parameter block by
-    // readNgxFrameInputs() (see ngxEvaluateFeatureCHook), for a later task to tag/convert via
-    // Streamline. Render-thread-only: written and read from inside the NGX hook alone, so -
-    // unlike CameraSnapshot (Streamline.h), which crosses game-thread -> render-thread - it
-    // needs no cross-thread lock.
-    struct NgxFrameInputs
-    {
-        VkImage depthImage{ VK_NULL_HANDLE };
-        VkImageView depthView{ VK_NULL_HANDLE };
-        VkFormat depthFormat{ VK_FORMAT_UNDEFINED };
-        uint32_t depthW{ 0 };
-        uint32_t depthH{ 0 };
-        VkImage mvecImage{ VK_NULL_HANDLE };
-        VkImageView mvecView{ VK_NULL_HANDLE };
-        VkFormat mvecFormat{ VK_FORMAT_UNDEFINED };
-        uint32_t mvecW{ 0 };
-        uint32_t mvecH{ 0 };
-        float jitterX{ 0.0f };
-        float jitterY{ 0.0f };
-        float mvScaleX{ 0.0f };
-        float mvScaleY{ 0.0f };
-        uint32_t reset{ 0 };
-        bool valid{ false };
-    };
+    // readNgxFrameInputs() (see ngxEvaluateFeatureCHook), tagged + converted to sl::Constants by
+    // StreamlineManager::SubmitFrameData (Streamline.h) for DLSS-G. Render-thread-only: written
+    // and read from inside the NGX hook alone, so - unlike CameraSnapshot (Streamline.h), which
+    // crosses game-thread -> render-thread - it needs no cross-thread lock. NgxFrameInputs itself
+    // is defined in Streamline.h (extui namespace, same as StreamlineManager), not nested here,
+    // so SubmitFrameData can take it as an ordinary parameter.
     NgxFrameInputs ngxInputs_;
 
     SwapchainInfo swapchain_;
