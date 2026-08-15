@@ -193,6 +193,7 @@ public:
             for (auto const& existing : into) if (existing == value) return;
             into.push_back(value);
         };
+        bool anyReqOk = false;
         for (auto feature : wanted) {
             sl::FeatureRequirements req{};
             auto reqResult = slGetFeatureRequirements_ ? slGetFeatureRequirements_(feature, req) : sl::Result::eErrorNotInitialized;
@@ -200,6 +201,7 @@ public:
                 Note("SL: WARN: slGetFeatureRequirements(%u) -> %d", feature, (int)reqResult);
                 continue;
             }
+            anyReqOk = true;
             for (uint32_t i = 0; i < req.vkNumInstanceExtensions; i++) addUnique(requirements_.instanceExtensions, req.vkInstanceExtensions[i]);
             for (uint32_t i = 0; i < req.vkNumDeviceExtensions; i++) addUnique(requirements_.deviceExtensions, req.vkDeviceExtensions[i]);
             for (uint32_t i = 0; i < req.vkNumFeatures12; i++) addUnique(requirements_.features12, req.vkFeatures12[i]);
@@ -208,7 +210,7 @@ public:
             requirements_.computeQueues = std::max(requirements_.computeQueues, req.vkNumComputeQueuesRequired);
             requirements_.opticalFlowQueues = std::max(requirements_.opticalFlowQueues, req.vkNumOpticalFlowQueuesRequired);
         }
-        requirements_.valid = true;
+        requirements_.valid = anyReqOk;
         Note("SL: requirements: %u instance ext, %u device ext, %u feat12, %u feat13, queues g=%u c=%u ofa=%u",
             (unsigned)requirements_.instanceExtensions.size(), (unsigned)requirements_.deviceExtensions.size(),
             (unsigned)requirements_.features12.size(), (unsigned)requirements_.features13.size(),
@@ -254,15 +256,19 @@ public:
 
     bool HandOffDevice(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, SLQueueSlots const& slots)
     {
-        if (!Ready() || slSetVulkanInfo_ == nullptr) return false;
+        if (!Ready()) return false;
+        if (slSetVulkanInfo_ == nullptr) {
+            Disable("slSetVulkanInfo export missing");
+            return false;
+        }
 
         sl::VulkanInfo info{};
         info.instance = instance;
         info.physicalDevice = physicalDevice;
         info.device = device;
-        info.graphicsQueueFamily = slots.graphicsFamily;
+        info.graphicsQueueFamily = slots.graphicsFamily == ~0u ? 0 : slots.graphicsFamily;
         info.graphicsQueueIndex = slots.graphicsIndex;
-        info.computeQueueFamily = slots.computeFamily;
+        info.computeQueueFamily = slots.computeFamily == ~0u ? 0 : slots.computeFamily;
         info.computeQueueIndex = slots.computeIndex;
         info.opticalFlowQueueFamily = slots.opticalFlowFamily == ~0u ? 0 : slots.opticalFlowFamily;
         info.opticalFlowQueueIndex = slots.opticalFlowIndex;

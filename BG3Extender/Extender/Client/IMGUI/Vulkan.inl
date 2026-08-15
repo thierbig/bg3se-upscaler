@@ -309,10 +309,14 @@ public:
             };
 
             slQueueSlots_ = {};
-            slQueueSlots_.graphicsFamily = findFamily(VK_QUEUE_GRAPHICS_BIT, 0);
-            addQueues(slQueueSlots_.graphicsFamily, reqs.graphicsQueues, slQueueSlots_.graphicsIndex);
-            slQueueSlots_.computeFamily = findFamily(VK_QUEUE_COMPUTE_BIT, VK_QUEUE_GRAPHICS_BIT);
-            addQueues(slQueueSlots_.computeFamily, reqs.computeQueues, slQueueSlots_.computeIndex);
+            if (reqs.graphicsQueues > 0) {
+                slQueueSlots_.graphicsFamily = findFamily(VK_QUEUE_GRAPHICS_BIT, 0);
+                addQueues(slQueueSlots_.graphicsFamily, reqs.graphicsQueues, slQueueSlots_.graphicsIndex);
+            }
+            if (reqs.computeQueues > 0) {
+                slQueueSlots_.computeFamily = findFamily(VK_QUEUE_COMPUTE_BIT, VK_QUEUE_GRAPHICS_BIT);
+                addQueues(slQueueSlots_.computeFamily, reqs.computeQueues, slQueueSlots_.computeIndex);
+            }
             if (reqs.opticalFlowQueues > 0) {
                 slQueueSlots_.opticalFlowFamily = findFamily(VK_QUEUE_OPTICAL_FLOW_BIT_NV, 0);
                 slQueueSlots_.opticalFlowNative = slQueueSlots_.opticalFlowFamily != ~0u;
