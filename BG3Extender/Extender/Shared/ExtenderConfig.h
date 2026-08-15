@@ -58,6 +58,9 @@ struct ExtenderConfig
     // DIAGNOSTIC (temporary): how much of the NGX overlay composite to run.
     //   0 = off, 1 = layout barriers only, 2 = + render pass, 3 = + ImGui draw (default)
     uint32_t NgxOverlayStage{ 3 };
+    // dlss-fg: master gate for the extender-driven Streamline integration. Off (default)
+    // means not one line of SL code runs - no module load, no routing, vanilla behavior.
+    bool StreamlineEnabled{ false };
     uint32_t DebuggerPort{ 9999 };
     uint32_t LuaDebuggerPort{ 9998 };
     uint32_t DebugFlags{ 0 };

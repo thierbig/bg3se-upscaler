@@ -80,6 +80,7 @@ public:
     bool Load()
     {
         if (module_ != nullptr) return true;
+        if (!gExtender->GetConfig().StreamlineEnabled) return false;
         gInstance = this;
 
         // Prefer the Streamline runtime the upscaler package ships; the interposer finds
