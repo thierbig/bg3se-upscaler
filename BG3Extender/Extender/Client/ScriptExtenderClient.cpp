@@ -2,6 +2,8 @@
 #include <Extender/Client/ScriptExtenderClient.h>
 #include <Extender/ScriptExtender.h>
 #include <Extender/Version.h>
+#include <Extender/Client/IMGUI/Streamline.h>
+#include <GameDefinitions/Components/Camera.h>
 #include <shlwapi.h>
 
 #define STATIC_HOOK(name) decltype(bg3se::ecl::ScriptExtender::name) * decltype(bg3se::ecl::ScriptExtender::name)::gHook;
@@ -277,6 +279,125 @@ void ScriptExtender::GameStateWorkerWrapper(void (*wrapped)(void*), void* self)
     wrapped(self);
 }
 
+namespace
+{
+    // Enumerate every entity carrying a CameraComponent. Direct, non-Lua port of
+    // lua::entity::GetAllEntitiesWithComponent (BG3Extender/Lua/Libs/Entity.inl) restricted to
+    // CameraComponent: that component is not one-frame (DEFINE_COMPONENT default, Base.h:45-49),
+    // so the one-frame branches from the Lua original are omitted here.
+    void CollectCameraEntities(ecs::EntitySystemHelpersBase& helpers, ecs::EntityWorld& world, std::vector<EntityHandle>& out)
+    {
+        auto componentType = helpers.GetComponentIndex(CameraComponent::ComponentType);
+        if (!componentType) return;
+
+        auto const& meta = helpers.GetComponentMeta(CameraComponent::ComponentType);
+        if (meta.SingleComponentQuery != ecs::UndefinedQuery) {
+            auto& query = world.Queries.Queries[(unsigned)meta.SingleComponentQuery];
+            for (auto const& storage : query.EntityStorages.values()) {
+                if (storage.Storage == nullptr) continue;
+                for (auto const& handle : storage.Storage->InstanceToPageMap.keys()) {
+                    out.push_back(handle);
+                }
+            }
+        } else if (world.Storage != nullptr) {
+            for (auto cls : world.Storage->Storages) {
+                if (cls != nullptr && cls->ComponentTypeToIndex.try_get(*componentType)) {
+                    for (auto const& handle : cls->InstanceToPageMap.keys()) {
+                        out.push_back(handle);
+                    }
+                }
+            }
+        }
+    }
+
+    // Resolve the single active CameraComponent (CameraComponent::Active, Camera.h:294) and
+    // copy its render-thread-unsafe matrices/controller state into a plain POD snapshot.
+    // GAME THREAD ONLY - see Docs/superpowers/2026-08-15-phase2b-investigation.md Q2 for why
+    // this must never run from the Vulkan/NGX render hook. Never throws: every ECS access here
+    // is null-checked, and the caller additionally wraps this in try/catch as defense in depth.
+    extui::CameraSnapshot ResolveCameraSnapshot()
+    {
+        extui::CameraSnapshot snap;
+
+        auto& helpers = gExtender->GetClient().GetEntityHelpers();
+        if (!helpers.HasEntityWorld()) return snap;
+
+        auto world = helpers.GetEntityWorld();
+        if (world == nullptr) return snap;
+
+        std::vector<EntityHandle> candidates;
+        CollectCameraEntities(helpers, *world, candidates);
+
+        CameraComponent* active = nullptr;
+        for (auto const& handle : candidates) {
+            auto* cam = helpers.GetComponent<CameraComponent>(handle);
+            if (cam != nullptr && cam->Active) {
+                active = cam;
+                break;
+            }
+        }
+
+        if (active == nullptr || active->Controller == nullptr) {
+            return snap;
+        }
+
+        auto* controller = active->Controller;
+        auto const& cam = controller->Camera;
+
+        snap.view = cam.ViewMatrix;
+        snap.invView = cam.InvViewMatrix;
+        snap.proj = cam.ProjectionMatrix;
+        snap.invProj = cam.InvProjectionMatrix;
+        snap.pos = controller->GetWorldTranslate();
+        auto rot = controller->GetWorldRotate();
+        snap.right = rot * glm::vec3(1.0f, 0.0f, 0.0f);
+        snap.up = rot * glm::vec3(0.0f, 1.0f, 0.0f);
+        snap.fwd = rot * glm::vec3(0.0f, 0.0f, -1.0f);
+        snap.nearP = controller->NearPlane;
+        snap.farP = controller->FarPlane;
+        snap.fov = controller->FOV;
+        snap.aspect = controller->AspectRatio;
+        snap.valid = true;
+        return snap;
+    }
+
+    // Called once per game-thread tick from OnUpdateGuarded. Only does any work when
+    // StreamlineEnabled && StreamlineFGEnabled are both set; otherwise it's a no-op (no
+    // snapshot is produced or published, per the phase 2b gating requirement).
+    void UpdateCameraSnapshot()
+    {
+        auto& config = gExtender->GetConfig();
+        if (!config.StreamlineEnabled || !config.StreamlineFGEnabled) return;
+
+        auto* sl = extui::StreamlineManager::Get();
+        if (sl == nullptr) return;
+
+        extui::CameraSnapshot snap;
+        try {
+            snap = ResolveCameraSnapshot();
+        } catch (...) {
+            // Never let a resolution failure propagate into the game loop - publish an
+            // explicitly-invalid snapshot instead (the render thread skips constants for it).
+            snap = extui::CameraSnapshot{};
+        }
+
+        static bool firstValidLogged = false;
+        static bool failureLogged = false;
+        if (snap.valid) {
+            if (!firstValidLogged) {
+                firstValidLogged = true;
+                sl->Note("camera snapshot: first valid frame - fov=%.2f near=%.3f far=%.1f aspect=%.3f proj[0][0]=%.4f proj[1][1]=%.4f",
+                    snap.fov, snap.nearP, snap.farP, snap.aspect, snap.proj[0][0], snap.proj[1][1]);
+            }
+        } else if (!failureLogged) {
+            failureLogged = true;
+            sl->Note("camera snapshot: could not resolve active camera");
+        }
+
+        sl->SetCameraSnapshot(snap);
+    }
+}
+
 #if USE_OPTICK
 std::unique_ptr< ::Optick::Event> frameEvent;
 #endif
@@ -309,6 +430,7 @@ void ScriptExtender::OnUpdateGuarded(void* self, GameTime* time)
     network_.Update();
     RunPendingTasks();
     gExtender->IMGUI().Update();
+    UpdateCameraSnapshot();
     if (extensionState_) {
         extensionState_->OnUpdate(*time);
         if (gExtender->GetLuaDebugger()) {

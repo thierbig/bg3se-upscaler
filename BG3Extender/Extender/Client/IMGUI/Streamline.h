@@ -22,6 +22,8 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 BEGIN_NS(extui)
 
@@ -37,6 +39,29 @@ struct SLQueueSlots
     uint32_t opticalFlowFamily{ ~0u };
     uint32_t opticalFlowIndex{};
     bool opticalFlowNative{};
+};
+
+// Thread-safe snapshot of the game's active camera, written once per tick on the game/update
+// thread (ScriptExtender::OnUpdateGuarded, ScriptExtenderClient.cpp) and read later by the
+// render thread (Vulkan/NGX hook). Component reads are NOT safe on the render thread - see
+// Docs/superpowers/2026-08-15-phase2b-investigation.md Q2. When the active camera cannot be
+// resolved, `valid` stays false and every other field is left at its identity/zero default;
+// consumers must skip constants when `valid` is false rather than trust zeroed matrices.
+struct CameraSnapshot
+{
+    glm::mat4 view{ 1.0f };
+    glm::mat4 invView{ 1.0f };
+    glm::mat4 proj{ 1.0f };
+    glm::mat4 invProj{ 1.0f };
+    glm::vec3 pos{ 0.0f };
+    glm::vec3 up{ 0.0f };
+    glm::vec3 right{ 0.0f };
+    glm::vec3 fwd{ 0.0f };
+    float nearP{ 0.0f };
+    float farP{ 0.0f };
+    float fov{ 0.0f };
+    float aspect{ 0.0f };
+    bool valid{ false };
 };
 
 class StreamlineManager
@@ -358,6 +383,22 @@ public:
     bool Ready() const { return initialized_ && !disabled_; }
     HMODULE Module() const { return module_; }
 
+    // Game thread only: called once per tick from ScriptExtender::OnUpdateGuarded with a
+    // freshly-resolved snapshot (or a default-constructed, valid=false one if the active
+    // camera couldn't be resolved that tick).
+    void SetCameraSnapshot(CameraSnapshot const& s) { std::lock_guard _(cameraMutex_); cameraSnapshot_ = s; }
+
+    // Safe to call from any thread, including the render/Vulkan/NGX hook - this is the whole
+    // point of the snapshot (see CameraSnapshot's comment and the Q2 investigation doc).
+    CameraSnapshot GetCameraSnapshot() { std::lock_guard _(cameraMutex_); return cameraSnapshot_; }
+
+    // The extender only ever creates one live StreamlineManager (VulkanBackend::streamline_,
+    // Vulkan.inl). gInstance is set as soon as Load() gets past the StreamlineEnabled gate, so
+    // this is a convenient global accessor for game-thread code (ScriptExtenderClient.cpp) that
+    // does not otherwise have a handle to the active VulkanBackend/IMGUIManager. Returns nullptr
+    // if Streamline was never loaded (e.g. StreamlineEnabled=false, or DX11 backend).
+    static StreamlineManager* Get() { return gInstance; }
+
 private:
     template <class T>
     T* GetProc(char const* name)
@@ -380,6 +421,9 @@ private:
     }
 
     static inline StreamlineManager* gInstance{ nullptr };
+
+    std::mutex cameraMutex_;
+    CameraSnapshot cameraSnapshot_;
 
     HMODULE module_{ nullptr };
     std::mutex bootLogLock_;
