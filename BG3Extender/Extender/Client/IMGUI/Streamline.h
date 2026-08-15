@@ -22,6 +22,20 @@
 
 BEGIN_NS(extui)
 
+// Vulkan queue family/index slots SL's extended device create-info reserved for its own use,
+// recorded by the device create-info surgery in Vulkan.inl and handed to slSetVulkanInfo once
+// the real VkDevice exists.
+struct SLQueueSlots
+{
+    uint32_t graphicsFamily{ ~0u };
+    uint32_t graphicsIndex{};
+    uint32_t computeFamily{ ~0u };
+    uint32_t computeIndex{};
+    uint32_t opticalFlowFamily{ ~0u };
+    uint32_t opticalFlowIndex{};
+    bool opticalFlowNative{};
+};
+
 class StreamlineManager
 {
 public:
@@ -118,6 +132,7 @@ public:
         slIsFeatureLoaded_ = GetProc<PFun_slIsFeatureLoaded>("slIsFeatureLoaded");
         slGetFeatureVersion_ = GetProc<PFun_slGetFeatureVersion>("slGetFeatureVersion");
         slGetFeatureRequirements_ = GetProc<PFun_slGetFeatureRequirements>("slGetFeatureRequirements");
+        slSetVulkanInfo_ = GetProc<PFun_slSetVulkanInfo>("slSetVulkanInfo");
 
         if (!slInit_ || !slIsFeatureSupported_) {
             Note("SL: ERROR: sl.interposer.dll is missing expected exports; Streamline disabled");
@@ -235,6 +250,34 @@ public:
         }
     }
 
+    bool HandOffDevice(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, SLQueueSlots const& slots)
+    {
+        if (!Ready() || slSetVulkanInfo_ == nullptr) return false;
+
+        sl::VulkanInfo info{};
+        info.instance = instance;
+        info.physicalDevice = physicalDevice;
+        info.device = device;
+        info.graphicsQueueFamily = slots.graphicsFamily;
+        info.graphicsQueueIndex = slots.graphicsIndex;
+        info.computeQueueFamily = slots.computeFamily;
+        info.computeQueueIndex = slots.computeIndex;
+        info.opticalFlowQueueFamily = slots.opticalFlowFamily == ~0u ? 0 : slots.opticalFlowFamily;
+        info.opticalFlowQueueIndex = slots.opticalFlowIndex;
+        info.useNativeOpticalFlowMode = slots.opticalFlowNative;
+
+        auto result = slSetVulkanInfo_(info);
+        if (result != sl::Result::eOk) {
+            Disable("slSetVulkanInfo failed");
+            Note("SL: ERROR: slSetVulkanInfo -> %d", (int)result);
+            return false;
+        }
+        Note("SL: slSetVulkanInfo ok (g %u@%u, c %u@%u, ofa %u@%u native=%d)",
+            slots.graphicsFamily, slots.graphicsIndex, slots.computeFamily, slots.computeIndex,
+            slots.opticalFlowFamily, slots.opticalFlowIndex, slots.opticalFlowNative ? 1 : 0);
+        return true;
+    }
+
     struct OwnedRequirements
     {
         std::vector<std::string> instanceExtensions;
@@ -300,6 +343,7 @@ private:
     PFun_slIsFeatureLoaded* slIsFeatureLoaded_{ nullptr };
     PFun_slGetFeatureVersion* slGetFeatureVersion_{ nullptr };
     PFun_slGetFeatureRequirements* slGetFeatureRequirements_{ nullptr };
+    PFun_slSetVulkanInfo* slSetVulkanInfo_{ nullptr };
 };
 
 END_NS()

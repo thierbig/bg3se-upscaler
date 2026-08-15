@@ -348,6 +348,9 @@ public:
         vkCreateDeviceHooked(physicalDevice, pCreateInfo, pAllocator, pDevice, result);
         if (result == VK_SUCCESS) {
             streamline_.FlushBootLog();
+            if (streamline_.Ready()) {
+                streamline_.HandOffDevice(instance_, physicalDevice, *pDevice, slQueueSlots_);
+            }
             streamline_.LogFeatureSupport(physicalDevice);
         }
         return result;
@@ -1654,16 +1657,7 @@ private:
 
     StreamlineManager streamline_;
     bool slInitAttempted_{ false };
-    struct SLQueueSlots
-    {
-        uint32_t graphicsFamily{ ~0u };
-        uint32_t graphicsIndex{};
-        uint32_t computeFamily{ ~0u };
-        uint32_t computeIndex{};
-        uint32_t opticalFlowFamily{ ~0u };
-        uint32_t opticalFlowIndex{};
-        bool opticalFlowNative{};
-    } slQueueSlots_;
+    SLQueueSlots slQueueSlots_;
     HMODULE sl_{ nullptr };
     PFN_vkQueuePresentKHR dlssgPresentFunction_{ nullptr };
     PFN_vkCreateSwapchainKHR dlssgCreateSwapchainKHR_{ nullptr };
