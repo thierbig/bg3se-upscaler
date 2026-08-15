@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <vector>
 #include <psapi.h>
+#include <atomic>
 #include <Extender/Client/IMGUI/Streamline.h>
 
 #ifndef NVSDK_CONV
@@ -101,9 +102,13 @@ END_SE()
 
 BEGIN_NS(extui)
 
-// Set while a call routed into sl.interposer re-enters our loader-level detours; the
-// inner leg must go straight to the original function or we recurse forever.
-static thread_local bool gSLRouteReentry{ false };
+// Set while a call routed into sl.interposer is in flight. Any entry into our loader-level
+// detours during that window - the interposer's own nested call on this thread, or
+// Streamline worker threads touching the patched entry points mid-initialization - must go
+// straight to the original function. Process-wide on purpose: a thread-local guard let SL's
+// internal threads re-enter the interposer through our wrapper while it was still
+// initializing, which ended in a call through a null hook-table entry.
+static std::atomic<bool> gSLRouteInFlight{ false };
 
 class VulkanBackend : public RenderingBackend
 {
@@ -162,7 +167,7 @@ public:
         const VkAllocationCallbacks* pAllocator,
         VkInstance* pInstance)
     {
-        if (gSLRouteReentry) return orig(pCreateInfo, pAllocator, pInstance);
+        if (gSLRouteInFlight.load(std::memory_order_acquire)) return orig(pCreateInfo, pAllocator, pInstance);
 
         // Load + init deferred from EnableHooks (see comment there), and attempted exactly
         // once: BG3 calls vkCreateInstance more than once, and retrying a failed slInit with
@@ -181,9 +186,9 @@ public:
         VkResult result;
         auto proxy = streamline_.CreateInstanceProxy();
         if (proxy != nullptr) {
-            gSLRouteReentry = true;
+            gSLRouteInFlight.store(true, std::memory_order_release);
             result = proxy(pCreateInfo, pAllocator, pInstance);
-            gSLRouteReentry = false;
+            gSLRouteInFlight.store(false, std::memory_order_release);
             INFO("SL: instance creation routed through interposer -> %d", result);
         } else {
             result = orig(pCreateInfo, pAllocator, pInstance);
@@ -200,14 +205,14 @@ public:
         const VkAllocationCallbacks* pAllocator,
         VkDevice* pDevice)
     {
-        if (gSLRouteReentry) return orig(physicalDevice, pCreateInfo, pAllocator, pDevice);
+        if (gSLRouteInFlight.load(std::memory_order_acquire)) return orig(physicalDevice, pCreateInfo, pAllocator, pDevice);
 
         VkResult result;
         auto proxy = streamline_.CreateDeviceProxy();
         if (proxy != nullptr) {
-            gSLRouteReentry = true;
+            gSLRouteInFlight.store(true, std::memory_order_release);
             result = proxy(physicalDevice, pCreateInfo, pAllocator, pDevice);
-            gSLRouteReentry = false;
+            gSLRouteInFlight.store(false, std::memory_order_release);
             INFO("SL: device creation routed through interposer -> %d", result);
         } else {
             result = orig(physicalDevice, pCreateInfo, pAllocator, pDevice);
