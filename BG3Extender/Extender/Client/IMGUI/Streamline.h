@@ -135,8 +135,13 @@ public:
         pref.showConsole = false;
         pref.logLevel = sl::LogLevel::eVerbose;
         pref.logMessageCallback = &LogCallback;
-        // No OTA: run exactly the plugins on disk, deterministically.
-        pref.flags = sl::PreferenceFlags::eDisableCLStateTracking;
+        // OTA must stay on: the on-disk Streamline plugins (2.10.3) predate this GPU
+        // architecture and self-disable on it, while NVIDIA's OTA cache serves 2.11.0 plugins
+        // that support it - which is also how the PureDark setup actually ran. Disabling OTA
+        // "for determinism" made slInit fail with no loadable plugins.
+        pref.flags = sl::PreferenceFlags::eDisableCLStateTracking
+            | sl::PreferenceFlags::eAllowOTA
+            | sl::PreferenceFlags::eLoadDownloadedPlugins;
         pref.featuresToLoad = features;
         pref.numFeaturesToLoad = (uint32_t)std::size(features);
         pref.applicationId = 231313132;
