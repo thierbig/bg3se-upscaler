@@ -38,8 +38,21 @@ enum NVSDK_NGX_Result {
 #define NVSDK_NGX_Parameter_Output "Output"
 #endif
 
+// DLSS-SR input parameter names (standard NGX names). Like NVSDK_NGX_Parameter_Output above,
+// these are local #defines rather than SDK constants - no vendored NGX SDK header exists in
+// this repo (Docs/superpowers/2026-08-15-phase2b-investigation.md Q3).
+#define NGX_DLSS_Depth "Depth"
+#define NGX_DLSS_MotionVectors "MotionVectors"
+#define NGX_DLSS_Jitter_X "Jitter Offset X"
+#define NGX_DLSS_Jitter_Y "Jitter Offset Y"
+#define NGX_DLSS_MVScale_X "MV Scale X"
+#define NGX_DLSS_MVScale_Y "MV Scale Y"
+#define NGX_DLSS_Reset "Reset"
+
 struct NVSDK_NGX_Parameter;
 typedef NVSDK_NGX_Result (NVSDK_CONV *PFN_NVSDK_NGX_Parameter_GetVoidPointer)(NVSDK_NGX_Parameter*, const char*, void**);
+typedef NVSDK_NGX_Result (NVSDK_CONV *PFN_NVSDK_NGX_Parameter_GetF)(NVSDK_NGX_Parameter*, const char*, float*);
+typedef NVSDK_NGX_Result (NVSDK_CONV *PFN_NVSDK_NGX_Parameter_GetUI)(NVSDK_NGX_Parameter*, const char*, unsigned int*);
 
 enum NVSDK_NGX_Resource_VK_Type {
     NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW,
@@ -1158,6 +1171,116 @@ private:
 
         frameNo_++;
     }
+
+    // Reads the DLSS-SR *input* resources/scalars NGX consumed on this EvaluateFeature call
+    // (depth, motion vectors, jitter offset, mv-scale, reset) into ngxInputs_, for a later task
+    // to tag/convert. Mirrors the existing "Output" read below: GetVoidPointer -> reinterpret as
+    // NVSDK_NGX_Resource_VK* -> pull the Vulkan image/view/format/extent out of ImageViewInfo.
+    // Read-only - never mutates InParameters, never touches the overlay's render pass/framebuffer/
+    // pipeline caches (globalResourceLock_), and always-boots: any failed/null read just marks
+    // ngxInputs_.valid=false and logs once, it never blocks or crashes the real NGX call.
+    //
+    // ngxGetVoidPointer_/ngxGetF_/ngxGetUI_ and ngxInputs_ are new members touched only from
+    // inside this hook (called serially on the game's render thread, never from NewFrame()/
+    // FinishFrame()/the present hook), so - unlike the caches globalResourceLock_ guards - they
+    // need no lock here.
+    void readNgxFrameInputs(const NVSDK_NGX_Parameter* params)
+    {
+        // Resolve lazily, same pattern (and same providing module) as the Output read below.
+        // This runs before that read's own resolve attempt, since frame-gen needs these inputs
+        // on every evaluated frame - not only frames where the debug overlay happens to draw.
+        if (ngxGetVoidPointer_ == nullptr) {
+            forEachNgxCandidateModule([this](HMODULE mod, wchar_t const* label) {
+                auto proc = reinterpret_cast<PFN_NVSDK_NGX_Parameter_GetVoidPointer>(
+                    GetProcAddress(mod, "NVSDK_NGX_Parameter_GetVoidPointer"));
+                if (proc == nullptr) return false;
+                ngxGetVoidPointer_ = proc;
+                // Scalar getters are best-effort - a missing export just leaves jitter/mv-scale/
+                // reset at their defaults, it does not block the mandatory depth/mvec reads.
+                ngxGetF_ = reinterpret_cast<PFN_NVSDK_NGX_Parameter_GetF>(
+                    GetProcAddress(mod, "NVSDK_NGX_Parameter_GetF"));
+                ngxGetUI_ = reinterpret_cast<PFN_NVSDK_NGX_Parameter_GetUI>(
+                    GetProcAddress(mod, "NVSDK_NGX_Parameter_GetUI"));
+                INFO("IMGUI: resolved NVSDK_NGX_Parameter_GetVoidPointer/GetF/GetUI in %S", label);
+                return true;
+            });
+        }
+
+        if (ngxGetVoidPointer_ == nullptr) {
+            ngxInputs_.valid = false;
+            if (!ngxInputsFailureLogged_) {
+                ngxInputsFailureLogged_ = true;
+                streamline_.Note("NGX frame inputs: NVSDK_NGX_Parameter_GetVoidPointer not exported "
+                    "by any loaded module; cannot read depth/motion-vectors");
+            }
+            return;
+        }
+
+        auto* p = const_cast<NVSDK_NGX_Parameter*>(params);
+
+        auto readResource = [&](char const* name, VkImage& img, VkImageView& view, VkFormat& fmt, uint32_t& w, uint32_t& h) -> bool {
+            void* ptr = nullptr;
+            if (ngxGetVoidPointer_(p, name, &ptr) != NVSDK_NGX_Result_Success || !ptr)
+                return false;
+            auto* resVK = reinterpret_cast<NVSDK_NGX_Resource_VK*>(ptr);
+            const NVSDK_NGX_ImageViewInfo_VK& iv = resVK->Resource.ImageViewInfo;
+            if (iv.Image == VK_NULL_HANDLE || iv.ImageView == VK_NULL_HANDLE || iv.Format == VK_FORMAT_UNDEFINED)
+                return false;
+            img = iv.Image;
+            view = iv.ImageView;
+            fmt = iv.Format;
+            w = iv.Width;
+            h = iv.Height;
+            return true;
+        };
+
+        bool depthOk = readResource(NGX_DLSS_Depth, ngxInputs_.depthImage, ngxInputs_.depthView,
+            ngxInputs_.depthFormat, ngxInputs_.depthW, ngxInputs_.depthH);
+        bool mvecOk = readResource(NGX_DLSS_MotionVectors, ngxInputs_.mvecImage, ngxInputs_.mvecView,
+            ngxInputs_.mvecFormat, ngxInputs_.mvecW, ngxInputs_.mvecH);
+
+        // Scalars are best-effort: default to 0 (reset=0) whenever the getter is unavailable or
+        // NGX has no value for it this call - never treated as mandatory.
+        float jitterX = 0.0f, jitterY = 0.0f, mvScaleX = 0.0f, mvScaleY = 0.0f;
+        unsigned int reset = 0;
+        if (ngxGetF_ != nullptr) {
+            ngxGetF_(p, NGX_DLSS_Jitter_X, &jitterX);
+            ngxGetF_(p, NGX_DLSS_Jitter_Y, &jitterY);
+            ngxGetF_(p, NGX_DLSS_MVScale_X, &mvScaleX);
+            ngxGetF_(p, NGX_DLSS_MVScale_Y, &mvScaleY);
+        }
+        if (ngxGetUI_ != nullptr) {
+            ngxGetUI_(p, NGX_DLSS_Reset, &reset);
+        }
+        ngxInputs_.jitterX = jitterX;
+        ngxInputs_.jitterY = jitterY;
+        ngxInputs_.mvScaleX = mvScaleX;
+        ngxInputs_.mvScaleY = mvScaleY;
+        ngxInputs_.reset = reset;
+
+        if (!depthOk || !mvecOk) {
+            ngxInputs_.valid = false;
+            if (!ngxInputsFailureLogged_) {
+                ngxInputsFailureLogged_ = true;
+                streamline_.Note("NGX frame inputs: mandatory '%s' resource missing from the NGX "
+                    "parameter block this call",
+                    !depthOk ? NGX_DLSS_Depth : NGX_DLSS_MotionVectors);
+            }
+            return;
+        }
+
+        ngxInputs_.valid = true;
+
+        if (!ngxInputsFirstValidLogged_) {
+            ngxInputsFirstValidLogged_ = true;
+            streamline_.Note("NGX frame inputs: first valid read - depth %ux%u fmt=%d, mvec %ux%u fmt=%d, "
+                "jitter=(%.4f,%.4f) mvScale=(%.4f,%.4f)",
+                ngxInputs_.depthW, ngxInputs_.depthH, (int)ngxInputs_.depthFormat,
+                ngxInputs_.mvecW, ngxInputs_.mvecH, (int)ngxInputs_.mvecFormat,
+                ngxInputs_.jitterX, ngxInputs_.jitterY, ngxInputs_.mvScaleX, ngxInputs_.mvScaleY);
+        }
+    }
+
     NVSDK_NGX_Result ngxEvaluateFeatureCHook(
         NgxEvaluateFeatureCHookType::BaseFuncType* orig,
         VkCommandBuffer InCmdList,
@@ -1171,6 +1294,18 @@ private:
         if (!ngxHookEnteredLogged_) {
             ngxHookEnteredLogged_ = true;
             INFO("IMGUI: NGX EvaluateFeature hook is live");
+        }
+
+        // Read DLSS-SR inputs (depth/mvec/jitter/mv-scale/reset) for a later task to tag/convert.
+        // Deliberately placed before the overlay's early-returns below (menuVisible_/ngxStage_/
+        // warmup) - frame generation needs every evaluated frame's inputs, not just frames where
+        // the debug overlay happens to draw. Inert unless FG is actually enabled; never blocks or
+        // alters the original NGX call either way.
+        {
+            auto const& cfg = gExtender->GetConfig();
+            if (evalRes == NVSDK_NGX_Result_Success && InParameters && cfg.StreamlineEnabled && cfg.StreamlineFGEnabled) {
+                readNgxFrameInputs(InParameters);
+            }
         }
 
         if (!initialized_ || !menuVisible_ || evalRes != NVSDK_NGX_Result_Success || !InCmdList || !InParameters)
@@ -1659,17 +1794,50 @@ private:
     static constexpr unsigned NgxProbeInterval{ 120 };
     unsigned ngxProbeDelay_{ 0 };
     PFN_NVSDK_NGX_Parameter_GetVoidPointer ngxGetVoidPointer_{ nullptr };
+    // Scalar getters, resolved from the same module as ngxGetVoidPointer_ above (see
+    // readNgxFrameInputs). Best-effort - null just leaves jitter/mv-scale/reset at their
+    // defaults, it never blocks the mandatory depth/mvec resource reads.
+    PFN_NVSDK_NGX_Parameter_GetF ngxGetF_{ nullptr };
+    PFN_NVSDK_NGX_Parameter_GetUI ngxGetUI_{ nullptr };
     // One-shot latches so the per-frame paths below report once instead of every frame.
     bool ngxProbeFailureLogged_{ false };
     bool ngxHookEnteredLogged_{ false };
     bool ngxOutputUnavailableLogged_{ false };
     bool ngxNoOutputResourceLogged_{ false };
     bool ngxOverlayDrawnLogged_{ false };
+    bool ngxInputsFailureLogged_{ false };
+    bool ngxInputsFirstValidLogged_{ false };
     // Set when the NGX hook composites the overlay; consumed by the present hook so a frame is
     // never rendered twice.
     bool ngxCompositedThisFrame_{ false };
     // BG3SE_NGX_STAGE override; -1 until resolved from the environment.
     int ngxStage_{ -1 };
+
+    // DLSS-SR input resources/scalars read from the NGX EvaluateFeature parameter block by
+    // readNgxFrameInputs() (see ngxEvaluateFeatureCHook), for a later task to tag/convert via
+    // Streamline. Render-thread-only: written and read from inside the NGX hook alone, so -
+    // unlike CameraSnapshot (Streamline.h), which crosses game-thread -> render-thread - it
+    // needs no cross-thread lock.
+    struct NgxFrameInputs
+    {
+        VkImage depthImage{ VK_NULL_HANDLE };
+        VkImageView depthView{ VK_NULL_HANDLE };
+        VkFormat depthFormat{ VK_FORMAT_UNDEFINED };
+        uint32_t depthW{ 0 };
+        uint32_t depthH{ 0 };
+        VkImage mvecImage{ VK_NULL_HANDLE };
+        VkImageView mvecView{ VK_NULL_HANDLE };
+        VkFormat mvecFormat{ VK_FORMAT_UNDEFINED };
+        uint32_t mvecW{ 0 };
+        uint32_t mvecH{ 0 };
+        float jitterX{ 0.0f };
+        float jitterY{ 0.0f };
+        float mvScaleX{ 0.0f };
+        float mvScaleY{ 0.0f };
+        uint32_t reset{ 0 };
+        bool valid{ false };
+    };
+    NgxFrameInputs ngxInputs_;
 
     SwapchainInfo swapchain_;
     uint32_t textures_{ 0 };
