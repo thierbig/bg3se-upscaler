@@ -158,9 +158,7 @@ public:
         // makes slInit refuse); attempted exactly once - retrying a failed slInit crashes.
         if (!slInitAttempted_) {
             slInitAttempted_ = true;
-            if (streamline_.Load() && streamline_.Init()) {
-                sl_ = streamline_.Module();
-            }
+            streamline_.Load() && streamline_.Init();
         }
 
         VkResult result;
@@ -322,6 +320,16 @@ public:
                 slQueueSlots_.opticalFlowNative = slQueueSlots_.opticalFlowFamily != ~0u;
                 addQueues(slQueueSlots_.opticalFlowFamily, reqs.opticalFlowQueues, slQueueSlots_.opticalFlowIndex);
             }
+
+            // Optical-flow device feature (DLSS-G's NVOFA path), chained additively - the game
+            // never carries this struct, so there is nothing to restore. wantOFA depends on
+            // slQueueSlots_.opticalFlowFamily, which the queue search directly above just set for
+            // this call, so this must run after that search (not alongside the 1.2/1.3 prepends,
+            // which run before the queue section and would still see the slot unset).
+            VkPhysicalDeviceOpticalFlowFeaturesNV slOFA{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPTICAL_FLOW_FEATURES_NV };
+            bool wantOFA = (reqs.opticalFlowQueues > 0) && (slQueueSlots_.opticalFlowFamily != ~0u);
+            if (wantOFA) slOFA.opticalFlow = VK_TRUE;
+            if (wantOFA) { slOFA.pNext = const_cast<void*>(extended.pNext); extended.pNext = &slOFA; }
 
             extended.enabledExtensionCount = (uint32_t)extensions.size();
             extended.ppEnabledExtensionNames = extensions.data();
@@ -1640,7 +1648,6 @@ private:
     StreamlineManager streamline_;
     bool slInitAttempted_{ false };
     SLQueueSlots slQueueSlots_;
-    HMODULE sl_{ nullptr };
     PFN_vkQueuePresentKHR dlssgPresentFunction_{ nullptr };
     PFN_vkCreateSwapchainKHR dlssgCreateSwapchainKHR_{ nullptr };
 

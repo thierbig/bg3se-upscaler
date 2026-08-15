@@ -10,9 +10,9 @@
 // Spike scope: init + feature support reporting only. No frame data, no tags, no FG
 // activation yet.
 
+#include <vulkan/vulkan.h>
 #include <External/streamline/include/sl.h>
 #include <External/streamline/include/sl_helpers_vk.h>
-#include <vulkan/vulkan.h>
 #include <Extender/ScriptExtender.h>
 #include <algorithm>
 #include <cstdarg>
