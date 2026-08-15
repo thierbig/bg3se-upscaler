@@ -61,6 +61,10 @@ struct ExtenderConfig
     // dlss-fg: master gate for the extender-driven Streamline integration. Off (default)
     // means not one line of SL code runs - no module load, no routing, vanilla behavior.
     bool StreamlineEnabled{ false };
+    // dlss-fg phase 2: activate DLSS frame generation (requires StreamlineEnabled). Off = phase-1 plumbing only.
+    bool StreamlineFGEnabled{ false };
+    // Frames generated between rendered frames: 1=2x, 2=3x, 3=4x. Clamped to device max at runtime.
+    uint32_t StreamlineFGFrames{ 1 };
     uint32_t DebuggerPort{ 9999 };
     uint32_t LuaDebuggerPort{ 9998 };
     uint32_t DebugFlags{ 0 };

@@ -818,6 +818,10 @@ private:
         IMGUI_DEBUG("VK swap chain created: %p", *pSwapchain);
         swapChain_ = *pSwapchain;
         collectSwapChainInfo(pCreateInfo);
+
+        if (gExtender->GetConfig().StreamlineFGEnabled && streamline_.Ready()) {
+            streamline_.ActivateFrameGen();
+        }
     }
 
     void vkDestroySwapchainKHRHooked(

@@ -13,6 +13,8 @@ void ApplyConfig(ExtenderConfig& config, Document& root)
 {
     ConfigGet(root, "NgxOverlayStage", config.NgxOverlayStage);
     ConfigGet(root, "StreamlineEnabled", config.StreamlineEnabled);
+    ConfigGet(root, "StreamlineFGEnabled", config.StreamlineFGEnabled);
+    ConfigGet(root, "StreamlineFGFrames", config.StreamlineFGFrames);
     ConfigGet(root, "CreateConsole", config.CreateConsole);
     ConfigGet(root, "DefaultToClientConsole", config.DefaultToClientConsole);
     ConfigGet(root, "EnableLogging", config.EnableLogging);

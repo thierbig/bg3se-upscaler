@@ -13,6 +13,7 @@
 #include <vulkan/vulkan.h>
 #include <External/streamline/include/sl.h>
 #include <External/streamline/include/sl_helpers_vk.h>
+#include <External/streamline/include/sl_dlss_g.h>
 #include <Extender/ScriptExtender.h>
 #include <algorithm>
 #include <cstdarg>
@@ -135,6 +136,7 @@ public:
         slGetFeatureVersion_ = GetProc<PFun_slGetFeatureVersion>("slGetFeatureVersion");
         slGetFeatureRequirements_ = GetProc<PFun_slGetFeatureRequirements>("slGetFeatureRequirements");
         slSetVulkanInfo_ = GetProc<PFun_slSetVulkanInfo>("slSetVulkanInfo");
+        slGetFeatureFunction_ = GetProc<PFun_slGetFeatureFunction>("slGetFeatureFunction");
 
         if (!slInit_ || !slIsFeatureSupported_) {
             Note("SL: ERROR: sl.interposer.dll is missing expected exports; Streamline disabled");
@@ -283,6 +285,52 @@ public:
         Note("SL: slSetVulkanInfo ok (g %u@%u, c %u@%u, ofa %u@%u native=%d)",
             slots.graphicsFamily, slots.graphicsIndex, slots.computeFamily, slots.computeIndex,
             slots.opticalFlowFamily, slots.opticalFlowIndex, slots.opticalFlowNative ? 1 : 0);
+        ResolveDLSSGFunctions();
+        return true;
+    }
+
+    void ResolveDLSSGFunctions()
+    {
+        if (slGetFeatureFunction_ == nullptr) { Note("SL: ERROR: slGetFeatureFunction unavailable; FG cannot resolve"); return; }
+        void* setOpt = nullptr; void* getState = nullptr;
+        slGetFeatureFunction_(sl::kFeatureDLSS_G, "slDLSSGSetOptions", setOpt);
+        slGetFeatureFunction_(sl::kFeatureDLSS_G, "slDLSSGGetState", getState);
+        slDLSSGSetOptions_ = reinterpret_cast<decltype(slDLSSGSetOptions_)>(setOpt);
+        slDLSSGGetState_ = reinterpret_cast<decltype(slDLSSGGetState_)>(getState);
+        Note("SL: DLSS-G functions resolved: setOptions=%p getState=%p", (void*)slDLSSGSetOptions_, (void*)slDLSSGGetState_);
+    }
+
+    bool ActivateFrameGen()
+    {
+        if (fgActivated_) return true;
+        if (!Ready() || slDLSSGSetOptions_ == nullptr || slDLSSGGetState_ == nullptr) return false;
+
+        sl::ViewportHandle viewport{ 0 };
+
+        uint32_t requested = gExtender->GetConfig().StreamlineFGFrames;
+        sl::DLSSGState state{};
+        if (slDLSSGGetState_(viewport, state, nullptr) == sl::Result::eOk && state.numFramesToGenerateMax > 0) {
+            if (requested > state.numFramesToGenerateMax) {
+                Note("SL: FG frames %u clamped to device max %u", requested, state.numFramesToGenerateMax);
+                requested = state.numFramesToGenerateMax;
+            }
+        }
+
+        sl::DLSSGOptions options{};
+        options.mode = sl::DLSSGMode::eOn;
+        options.numFramesToGenerate = requested;
+
+        auto r = slDLSSGSetOptions_(viewport, options);
+        if (r != sl::Result::eOk) {
+            Note("SL: ERROR: slDLSSGSetOptions(eOn) failed: %d - FG disabled this session", (int)r);
+            Disable("DLSS-G SetOptions failed");
+            return false;
+        }
+
+        sl::DLSSGState post{};
+        slDLSSGGetState_(viewport, post, &options);
+        Note("SL: DLSS-G ON - frames=%u max=%u status=0x%x", requested, post.numFramesToGenerateMax, (unsigned)post.status);
+        fgActivated_ = true;
         return true;
     }
 
@@ -343,6 +391,7 @@ private:
     bool initialized_{ false };
     bool featureSupportLogged_{ false };
     bool disabled_{ false };
+    bool fgActivated_{ false };
     OwnedRequirements requirements_;
 
     PFun_slInit* slInit_{ nullptr };
@@ -352,6 +401,9 @@ private:
     PFun_slGetFeatureVersion* slGetFeatureVersion_{ nullptr };
     PFun_slGetFeatureRequirements* slGetFeatureRequirements_{ nullptr };
     PFun_slSetVulkanInfo* slSetVulkanInfo_{ nullptr };
+    PFun_slGetFeatureFunction* slGetFeatureFunction_{ nullptr };
+    sl::Result (*slDLSSGSetOptions_)(const sl::ViewportHandle&, const sl::DLSSGOptions&){ nullptr };
+    sl::Result (*slDLSSGGetState_)(const sl::ViewportHandle&, sl::DLSSGState&, const sl::DLSSGOptions*){ nullptr };
 };
 
 END_NS()
