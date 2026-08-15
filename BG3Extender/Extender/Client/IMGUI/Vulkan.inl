@@ -348,6 +348,7 @@ public:
             requestReloadFonts_ = false;
         }
 
+        streamline_.FlushBootLog();
         tryInstallNgxEvaluateFeatureHook();
         ImGui_ImplVulkan_NewFrame();
         //IMGUI_FRAME_DEBUG("VK: NewFrame");

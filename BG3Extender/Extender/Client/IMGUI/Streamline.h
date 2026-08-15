@@ -40,6 +40,10 @@ public:
 
     void FlushBootLog()
     {
+        // The logger silently drops output until the console exists; keep the buffer until
+        // there is something real to print to. Called every frame until it succeeds.
+        if (gCoreLibPlatformInterface.GlobalConsole == nullptr) return;
+
         std::lock_guard _(bootLogLock_);
         if (bootLog_.empty()) return;
         INFO("SL: --- buffered boot log (%u lines) ---", (unsigned)bootLog_.size());
