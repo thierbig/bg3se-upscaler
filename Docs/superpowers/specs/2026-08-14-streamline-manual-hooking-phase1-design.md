@@ -198,3 +198,23 @@ walker, SE-Streamline.log) before any further code change.
    `slDLSSGSetOptions`, late activation at the load-screen swapchain recreate.
 3. UI on generated frames — render the IMGUI overlay to a dedicated image, tag as
    `UIColorAndAlpha`; flicker ends.
+
+## Phase-1 verification results (2026-08-14)
+
+- **Checkpoint B (gate off)**: PASS. `SE-Streamline.log` not recreated (zero SL
+  activity), behavior vanilla, alt-tab clean, no dumps.
+- **Checkpoint C (gate on)**: PASS. `slInit ok` (manual hooking) →
+  `slSetVulkanInfo ok (g 0@1, c 2@1, ofa 5@0 native=1)` — Streamline accepted the
+  game's device with our injected queues, including a native optical-flow queue on a
+  family the game does not use (added whole by the surgery) — and
+  `DLSS-G supported (SL 2.12.0, NGX 310.7.0)`. No dumps.
+- **Checkpoint D (gate on, stress)**: PASS. Full save load, multiple alt-tabs,
+  extended play, quit from menu: no dumps, zero SL errors or session disables, zero
+  driver resets.
+- Known/expected: three `sl.common` hook WARNs (`CmdBindPipeline`,
+  `CmdBindDescriptorSets`, `BeginCommandBuffer`) — consequences of
+  `eDisableCLStateTracking`; phase 2's tagging passes command buffers explicitly and
+  does not rely on those hooks.
+- Deferred minor: the `instance/device create extended` INFO lines fire before the
+  console exists and are absent from `SE-Streamline.log`; effects proven via the
+  handoff line. Route them through the buffered logger in phase 2.
