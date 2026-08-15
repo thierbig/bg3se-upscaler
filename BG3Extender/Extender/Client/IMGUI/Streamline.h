@@ -144,7 +144,12 @@ public:
             | sl::PreferenceFlags::eLoadDownloadedPlugins;
         pref.featuresToLoad = features;
         pref.numFeaturesToLoad = (uint32_t)std::size(features);
-        pref.applicationId = 231313132;
+        // 0xE658703: the app id family NVIDIA's driver/NGX on this machine already serves
+        // (nvngx_config.txt lists app_E6587xx, and the OTA plugin cache is keyed 1B0_E658703 -
+        // the id the working PureDark/nvapp stack ran under). The SDK sample id 231313132 has
+        // no NGX min-spec data, which made every plugin fall back to stale defaults and
+        // self-disable on this GPU.
+        pref.applicationId = 0xE658703;
         pref.renderAPI = sl::RenderAPI::eVulkan;
         if (!streamlineDir_.empty()) {
             pluginPaths[0] = streamlineDir_.c_str();
