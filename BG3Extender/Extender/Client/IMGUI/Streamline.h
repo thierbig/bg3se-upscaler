@@ -84,12 +84,18 @@ public:
 
         // Prefer the Streamline runtime the upscaler package ships; the interposer finds
         // sl.common.dll and the feature plugins next to itself.
+        // Our own matched Streamline runtime (SDK release, all components one version) has
+        // priority; mixing the 2.10.3 interposer from the upscaler package with 2.11 OTA
+        // plugins crashed with a null call inside the plugin/interposer handshake.
         wchar_t path[MAX_PATH]{};
         if (GetModuleFileNameW(nullptr, path, MAX_PATH) > 0) {
             if (auto slash = wcsrchr(path, L'\\')) *slash = L'\0';
-            streamlineDir_ = std::wstring(path) + L"\\mods\\UpscalerBasePlugin\\Streamline";
-            auto interposer = streamlineDir_ + L"\\sl.interposer.dll";
-            module_ = LoadLibraryW(interposer.c_str());
+            for (auto dir : { L"\\mods\\BG3SE-Streamline", L"\\mods\\UpscalerBasePlugin\\Streamline" }) {
+                streamlineDir_ = std::wstring(path) + dir;
+                auto interposer = streamlineDir_ + L"\\sl.interposer.dll";
+                module_ = LoadLibraryW(interposer.c_str());
+                if (module_ != nullptr) break;
+            }
         }
 
         if (module_ == nullptr) {
@@ -135,13 +141,10 @@ public:
         pref.showConsole = false;
         pref.logLevel = sl::LogLevel::eVerbose;
         pref.logMessageCallback = &LogCallback;
-        // OTA must stay on: the on-disk Streamline plugins (2.10.3) predate this GPU
-        // architecture and self-disable on it, while NVIDIA's OTA cache serves 2.11.0 plugins
-        // that support it - which is also how the PureDark setup actually ran. Disabling OTA
-        // "for determinism" made slInit fail with no loadable plugins.
-        pref.flags = sl::PreferenceFlags::eDisableCLStateTracking
-            | sl::PreferenceFlags::eAllowOTA
-            | sl::PreferenceFlags::eLoadDownloadedPlugins;
+        // OTA off again, deliberately: we now ship a version-matched 2.12.0 runtime
+        // (interposer + plugins + nvngx_dlssg from the SDK release), and the crash this
+        // replaces came precisely from mixing the interposer with newer OTA plugins.
+        pref.flags = sl::PreferenceFlags::eDisableCLStateTracking;
         pref.featuresToLoad = features;
         pref.numFeaturesToLoad = (uint32_t)std::size(features);
         // 0xE658703: the app id family NVIDIA's driver/NGX on this machine already serves
