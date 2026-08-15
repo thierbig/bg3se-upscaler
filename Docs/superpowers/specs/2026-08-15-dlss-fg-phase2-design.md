@@ -149,3 +149,13 @@ right under camera pan and character movement.
 - Note: `status=0x0` with no inputs yet supplied means no error was raised at activation;
   generated-frame correctness is 2b (depth/mvec tags + constants). Whether the DLSS-G
   watermark renders and whether frames are visually correct is deferred to 2b by design.
+
+## Environment gotcha (phase 2b, 2026-08-15)
+
+Initializing our Streamline (slInit) redirects the process's single NGX snippet search path to
+our plugin folder. If that folder lacks the DLSS super-resolution model `nvngx_dlss.dll`, the
+game's own DLSS detection fails and **BG3 removes DLSS from the Upscaling Type menu** (only
+FSR/XeSS remain), which in turn means no DLSS-SR EvaluateFeature call and no depth/mvec for us.
+Fix: place the game's own `bin\nvngx_dlss.dll` (version-matched) into `bin\mods\BG3SE-Streamline\`
+alongside `nvngx_dlssg.dll`. (The `nvngx_dlss.dll doesn't exist in any of the search paths`
+warning that remains afterward is Streamline's unused `sl.dlss` plugin, not the game's SR — benign.)
