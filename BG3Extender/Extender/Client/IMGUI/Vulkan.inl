@@ -144,12 +144,12 @@ public:
         QueuePresentKHRHook_.SetPreHook(&VulkanBackend::vkQueuePresentKHRHooked, this);
 
         // The extender drives Streamline itself; PureDark's upscaler.dll is no longer loaded
-        // on this branch (it was only ever loaded from right here). Only the module load
-        // happens here - slInit is deferred to the first vkCreateInstance, because this point
-        // in process startup is too early for NVAPI: sl.common reads driver version 0, every
-        // plugin computes adapter mask 0, and slInit fails with 'no plugins'. The working
-        // PureDark stack initialized at Vulkan-init time as well.
-        streamline_.Load();
+        // on this branch (it was only ever loaded from right here). Nothing SL-related happens
+        // here: loading the interposer this early lets it observe the game's pre-instance
+        // loader calls and slInit then refuses with 'APIs invoked before slInit' (24), and
+        // process startup is too early for NVAPI besides (driver version reads 0). Both load
+        // and init happen at the first vkCreateInstance, which is where the working stack did
+        // them.
     }
 
     // The game calls the loader's vkCreateInstance, which we detour. On the outer leg we
@@ -164,14 +164,18 @@ public:
     {
         if (gSLRouteReentry) return orig(pCreateInfo, pAllocator, pInstance);
 
-        // Deferred from EnableHooks; see comment there. By now NVAPI and the NGX capability
-        // queries work, so the plugins can evaluate the GPU correctly.
-        if (streamline_.Init()) {
-            sl_ = streamline_.Module();
-            dlssgPresentFunction_ = reinterpret_cast<PFN_vkQueuePresentKHR>(
-                GetProcAddress(sl_, "vkQueuePresentKHR"));
-            dlssgCreateSwapchainKHR_ = reinterpret_cast<PFN_vkCreateSwapchainKHR>(
-                GetProcAddress(sl_, "vkCreateSwapchainKHR"));
+        // Load + init deferred from EnableHooks (see comment there), and attempted exactly
+        // once: BG3 calls vkCreateInstance more than once, and retrying a failed slInit with
+        // half-loaded plugins crashes the process.
+        if (!slInitAttempted_) {
+            slInitAttempted_ = true;
+            if (streamline_.Load() && streamline_.Init()) {
+                sl_ = streamline_.Module();
+                dlssgPresentFunction_ = reinterpret_cast<PFN_vkQueuePresentKHR>(
+                    GetProcAddress(sl_, "vkQueuePresentKHR"));
+                dlssgCreateSwapchainKHR_ = reinterpret_cast<PFN_vkCreateSwapchainKHR>(
+                    GetProcAddress(sl_, "vkCreateSwapchainKHR"));
+            }
         }
 
         VkResult result;
@@ -1515,6 +1519,7 @@ private:
     NgxEvaluateFeatureCHookType ngxEvaluateFeatureHook_;
 
     StreamlineManager streamline_;
+    bool slInitAttempted_{ false };
     HMODULE sl_{ nullptr };
     PFN_vkQueuePresentKHR dlssgPresentFunction_{ nullptr };
     PFN_vkCreateSwapchainKHR dlssgCreateSwapchainKHR_{ nullptr };
