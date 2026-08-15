@@ -139,3 +139,13 @@ right under camera pan and character movement.
 3. BG3's depth and motion-vector conventions (reverse-Z? 2D vs 3D mvecs? jitter sign) — first
    validated by the 2b debug dump, then on screen.
 4. `numFramesToGenerate` max from `slDLSSGGetState` vs the requested frame count.
+
+## Phase-2a verification (2026-08-15)
+
+- **Checkpoint 2a PASS.** Gate on: `slInit ok` → `slSetVulkanInfo ok` → `DLSS-G functions
+  resolved` → **`DLSS-G ON - frames=1 max=3 status=0x0`** — DLSS Frame Generation activated by
+  the extender alone (no PureDark), `numFramesToGenerateMax=3` (device supports up to 4x),
+  no status-failure flags, no crash. This is the "FG turns on" gate.
+- Note: `status=0x0` with no inputs yet supplied means no error was raised at activation;
+  generated-frame correctness is 2b (depth/mvec tags + constants). Whether the DLSS-G
+  watermark renders and whether frames are visually correct is deferred to 2b by design.
