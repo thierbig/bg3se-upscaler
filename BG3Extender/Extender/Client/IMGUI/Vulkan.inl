@@ -43,10 +43,12 @@ enum NVSDK_NGX_Result {
 // this repo (Docs/superpowers/2026-08-15-phase2b-investigation.md Q3).
 #define NGX_DLSS_Depth "Depth"
 #define NGX_DLSS_MotionVectors "MotionVectors"
-#define NGX_DLSS_Jitter_X "Jitter Offset X"
-#define NGX_DLSS_Jitter_Y "Jitter Offset Y"
-#define NGX_DLSS_MVScale_X "MV Scale X"
-#define NGX_DLSS_MVScale_Y "MV Scale Y"
+// Standard NGX DLSS scalar param names are DOT-separated (nvsdk_ngx_params.h), not spaces.
+// Depth/MotionVectors are single words and were correct; these four returned 0 with spaces.
+#define NGX_DLSS_Jitter_X "Jitter.Offset.X"
+#define NGX_DLSS_Jitter_Y "Jitter.Offset.Y"
+#define NGX_DLSS_MVScale_X "MV.Scale.X"
+#define NGX_DLSS_MVScale_Y "MV.Scale.Y"
 #define NGX_DLSS_Reset "Reset"
 
 struct NVSDK_NGX_Parameter;
