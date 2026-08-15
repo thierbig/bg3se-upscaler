@@ -12,7 +12,7 @@ using namespace bg3se::lua;
 GenomeVariant::GenomeVariant()
 {}
 
-GenomeVariant::GenomeVariant(GenomeVariant&& o)
+GenomeVariant::GenomeVariant(GenomeVariant&& o) noexcept
 {
     Value = o.Value;
     Type = o.Type;
@@ -22,9 +22,8 @@ GenomeVariant::GenomeVariant(GenomeVariant&& o)
 
 GenomeVariant::GenomeVariant(GenomeVariant const& o)
 {
-    Type = o.Type;
-    if (Type) {
-        Type->AssignFromRawValue(this, &o.Value);
+    if (o.Type) {
+        o.Type->Init(this, o);
     }
 }
 
@@ -38,17 +37,17 @@ GenomeVariant& GenomeVariant::operator = (GenomeVariant const& o)
     if (Type && (!o.Type || Type->TypeName != o.Type->TypeName)) {
         ERR("Tried to change type of GenomeVariant from %s to %s!", Type->TypeName.GetString(), (o.Type ? o.Type->TypeName.GetString() : "(Untyped)"));
     } else {
-        Release();
-        Type = o.Type;
-        if (Type) {
-            Type->AssignFromRawValue(this, &o.Value);
+        if (o.Type) {
+            o.Type->Init(this, o);
+        } else {
+            Release();
         }
     }
 
     return *this;
 }
 
-GenomeVariant& GenomeVariant::operator = (GenomeVariant&& o)
+GenomeVariant& GenomeVariant::operator = (GenomeVariant&& o) noexcept
 {
     if (Type && (!o.Type || Type->TypeName != o.Type->TypeName)) {
         ERR("Tried to change type of GenomeVariant from %s to %s!", Type->TypeName.GetString(), (o.Type ? o.Type->TypeName.GetString() : "(Untyped)"));
@@ -140,8 +139,9 @@ UserReturn GenomeVariant::LuaGetValue(lua_State* L) const
         Serialize(L, &GetValue<TGenomeSet<STDString>>());
     } else if (Type->TypeName == GFS.strFixedStringSet) {
         Serialize(L, &GetValue<TGenomeSet<FixedString>>());
+    } else if (Type->TypeName == GFS.strTimelineData) {
+        lua::push(L, const_cast<GenomeTimelineData*>(&GetValue<GenomeTimelineData>()), GetCurrentLifetime(L));
     } else {
-        // TODO - TimelineData (= ls::GenomeTimelineData*)
         WARN_ONCE("Unsupported Genome variant type: %s", Type->TypeName.GetString());
         push(L, nullptr);
     }
@@ -188,7 +188,7 @@ void GenomeVariant::LuaSetValue(FixedString const& typeName, lua_State* L, int i
     }
 
     auto types = (*GetStaticSymbols().ls__gGlobalResourceManager)->GenomeTypeManager;
-    auto type = types->VarTypes.try_get_ptr(typeName);
+    auto type = types->VarTypes.try_get(typeName);
     if (!type) {
         luaL_error(L, "Genome type does not exist: %s", typeName.GetString());
         return;
@@ -226,8 +226,17 @@ void GenomeVariant::LuaSetValue(GenomeVarTypeDesc* type, lua_State* L, int index
         SetValue<glm::mat4>(L, index);
     } else if (type->TypeName == GFS.strFloatSet) {
         SetValue<TGenomeSet<float>>(L, index);
+    } else if (Type->TypeName == GFS.strIntSet) {
+        SetValue<TGenomeSet<int32_t>>(L, index);
+    } else if (Type->TypeName == GFS.strShortNameSet) {
+        SetValue<TGenomeSet<FixedString>>(L, index);
+    } else if (Type->TypeName == GFS.strStringSet) {
+        SetValue<TGenomeSet<STDString>>(L, index);
+    } else if (Type->TypeName == GFS.strFixedStringSet) {
+        SetValue<TGenomeSet<FixedString>>(L, index);
+    } else if (Type->TypeName == GFS.strTimelineData) {
+        SetValue<GenomeTimelineData>(L, index);
     } else {
-        // TODO - unsupported: FloatSet, IntSet, ShortNameSet, StringSet, FixedStringSet, TimelineData
         luaL_error(L, "Assignment not supported for this Genome type: %s", type->TypeName.GetString());
         return;
     }
@@ -240,6 +249,24 @@ GenomeEventArgs::~GenomeEventArgs()
 
 GenomeParametrizedEventArgs::~GenomeParametrizedEventArgs()
 {}
+
+UserReturn GenomeBlueprintInstance::LuaGetNode(lua_State* L, uint32_t nodeIdx)
+{
+    if (nodeIdx >= Nodes.size() || Parent == nullptr) {
+        push(L, nullptr);
+        return 1;
+    }
+
+    auto node = Nodes[nodeIdx];
+    auto tmpl = Parent->Nodes[nodeIdx];
+    auto const& type = tmpl->GetTypeID();
+
+    // Generic path - no specific type info available for this node
+    WARN("Genome node type unsupported: %s", type.GetString());
+    MakeObjectRef(L, node);
+
+    return 1;
+}
 
 END_NS()
 

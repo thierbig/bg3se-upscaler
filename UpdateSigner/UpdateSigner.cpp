@@ -40,9 +40,9 @@ int UpdateManifest(int argc, char** argv)
 
     ManifestSerializer parser;
     Manifest manifest;
-    std::string parseError;
-    if (parser.Parse(manifestStr, manifest, parseError) != ManifestParseResult::Successful) {
-        std::cout << "Unable to parse manifest: " << parseError << std::endl;
+    auto parseResult = parser.Parse(manifestStr, manifest);
+    if (!parseResult) {
+        std::cout << "Unable to parse manifest: " << parseResult.error().Message << std::endl;
         return 3;
     }
 
@@ -87,7 +87,9 @@ int UpdateManifest(int argc, char** argv)
         version.MaxGameVersion = {};
     }
 
-    version.URL = rootUrl + "v" + version.Version.ToString() + "-" + version.Digest + ".package";
+    if (!rootUrl.empty()) {
+        version.URL = rootUrl + "v" + version.Version.ToString() + "-" + version.Digest + ".package";
+    }
 
     auto curIt = resIt->second.ResourceVersions.find(version.Digest);
     if (curIt != resIt->second.ResourceVersions.end()) {
@@ -137,12 +139,12 @@ int ComputePathDigest(int argc, char** argv)
     return 0;
 }
 
-void* OSAlloc(std::size_t size)
+_Post_writable_byte_size_(size) void* OSAlloc(std::size_t size)
 {
     return malloc(size);
 }
 
-void OSFree(void* ptr)
+void OSFree(_Post_ptr_invalid_ _Pre_valid_ void* ptr) noexcept
 {
     return free(ptr);
 }

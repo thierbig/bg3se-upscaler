@@ -72,6 +72,7 @@ P_GETTER(Character, LuaGetSelf)
 // Functions
 P_FUN(GetStatus, esv::Character::GetStatus)
 P_FUN(GetStatusByType, esv::Character::GetStatusByType)
+P_FUN(CreateCacheTemplate, esv::Character::CreateCacheTemplate)
 END_CLS()
 
 
@@ -102,4 +103,7 @@ P(Flags2)
 P_BITMASK(Flags2)
 
 P_GETTER(Item, LuaGetSelf)
+
+// Functions
+P_FUN(CreateCacheTemplate, esv::Item::CreateCacheTemplate)
 END_CLS()

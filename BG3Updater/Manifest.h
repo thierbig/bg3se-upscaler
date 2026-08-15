@@ -6,82 +6,15 @@
 #include <algorithm>
 #include <optional>
 #include <CoreLib/JsonLibs.h>
+#include "GameVersion.h"
+#include "Result.h"
 
 BEGIN_SE()
 
 struct UpdaterConfig;
 
-struct VersionNumber
-{
-    inline VersionNumber()
-        : Major(0), Minor(0), Revision(0), Build(0)
-    {}
-
-    inline VersionNumber(int32_t major, int32_t minor, int32_t revision, int32_t build)
-        : Major(major), Minor(minor), Revision(revision), Build(build)
-    {}
-
-    inline static std::optional<VersionNumber> FromString(char const* versionNumber)
-    {
-        VersionNumber ver;
-        if (sscanf_s(versionNumber, "%d.%d.%d.%d", &ver.Major, &ver.Minor, &ver.Revision, &ver.Build) == 4) {
-            return ver;
-        } else {
-            return {};
-        }
-    }
-
-    inline std::string ToString() const
-    {
-        char ver[100];
-        sprintf_s(ver, "%d.%d.%d.%d", Major, Minor, Revision, Build);
-        return ver;
-    }
-
-    inline bool operator > (VersionNumber const& o) const
-    {
-        return Major > o.Major ||
-            (Major == o.Major && Minor > o.Minor) ||
-            (Major == o.Major && Minor == o.Minor && Revision > o.Revision) ||
-            (Major == o.Major && Minor == o.Minor && Revision == o.Revision && Build > o.Build);
-    }
-
-    inline bool operator < (VersionNumber const& o) const
-    {
-        return Major < o.Major ||
-            (Major == o.Major && Minor < o.Minor) ||
-            (Major == o.Major && Minor == o.Minor && Revision < o.Revision) ||
-            (Major == o.Major && Minor == o.Minor && Revision == o.Revision && Build < o.Build);
-    }
-
-    inline bool operator == (VersionNumber const& o) const
-    {
-        return Major == o.Major 
-            && Minor == o.Minor 
-            && Revision == o.Revision 
-            && Build == o.Build;
-    }
-
-    inline bool operator != (VersionNumber const& o) const
-    {
-        return Major != o.Major 
-            || Minor != o.Minor 
-            || Revision != o.Revision 
-            || Build != o.Build;
-    }
-
-    int32_t Major, Minor, Revision, Build;
-};
-
 std::optional<VersionNumber> GetGameVersion();
 std::optional<VersionNumber> GetModuleVersion(std::wstring_view path);
-
-enum class ManifestParseResult
-{
-    Successful,
-    Failed,
-    UpdateRequired
-};
 
 struct Manifest
 {
@@ -101,6 +34,15 @@ struct Manifest
 
         bool UpdatePackageMetadata(std::wstring const& path);
         bool UpdateDLLMetadata(std::wstring const& path);
+
+        inline bool operator < (ResourceVersion const& o) const
+        {
+            if (MinGameVersion && o.MinGameVersion && MinGameVersion != o.MinGameVersion) {
+                return MinGameVersion < o.MinGameVersion;
+            }
+
+            return BuildDate < o.BuildDate;
+        }
     };
 
     struct Resource
@@ -116,21 +58,31 @@ struct Manifest
 
     int32_t ManifestVersion;
     int32_t ManifestMinorVersion;
+    // Indicates that the manifest only contains a subset of all available resources and 
+    // should not be used for local resource deletion
+    bool Partial;
     std::string Notice;
     std::string NoMatchingVersionNotice;
     std::unordered_map<std::string, Resource> Resources;
+
+    std::optional<Manifest::ResourceVersion> FindResourceVersionWithOverrides(std::string const& resourceName,
+        VersionNumber const& gameVersion, UpdaterConfig const& config) const;
 };
 
 class ManifestSerializer
 {
 public:
-    ManifestParseResult Parse(std::string const& json, Manifest& manifest, std::string& parseError);
-    std::string Stringify(Manifest& manifest);
+    OperationResult Parse(std::string_view json, Manifest& manifest);
+    std::string Stringify(Manifest const& manifest);
 
 private:
-    bool Parse(rapidjson::Value const& node, Manifest& manifest, std::string& parseError);
-    bool ParseResource(rapidjson::Value const& node, Manifest::Resource& resource, std::string& parseError);
-    bool ParseVersion(rapidjson::Value const& node, Manifest::ResourceVersion& version, std::string& parseError);
+    OperationResult Parse(rapidjson::Value const& node, Manifest& manifest);
+    OperationResult ParseResource(rapidjson::Value const& node, Manifest::Resource& resource);
+    OperationResult ParseVersion(rapidjson::Value const& node, Manifest::ResourceVersion& version);
+
+    void Stringify(rapidjson::Value& doc, Manifest const& manifest, RAPIDJSON_DEFAULT_ALLOCATOR& alloc);
+    void Stringify(rapidjson::Value& resources, Manifest::Resource const& resource, RAPIDJSON_DEFAULT_ALLOCATOR& alloc);
+    void Stringify(rapidjson::Value& versions, Manifest::ResourceVersion const& ver, RAPIDJSON_DEFAULT_ALLOCATOR& alloc);
 };
 
 

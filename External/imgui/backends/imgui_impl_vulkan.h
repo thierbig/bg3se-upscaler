@@ -112,6 +112,12 @@ IMGUI_IMPL_API bool             ImGui_ImplVulkan_Init(ImGui_ImplVulkan_InitInfo*
 IMGUI_IMPL_API void             ImGui_ImplVulkan_Shutdown();
 IMGUI_IMPL_API void             ImGui_ImplVulkan_NewFrame();
 IMGUI_IMPL_API void             ImGui_ImplVulkan_RenderDrawData(ImDrawData* draw_data, VkCommandBuffer command_buffer, VkPipeline pipeline = VK_NULL_HANDLE);
+// BG3SE: build an extra pipeline for a render pass other than the one given to Init(). Needed to
+// draw into targets whose attachment format differs from the swapchain's (e.g. the DLSS/NGX output),
+// since a pipeline may only be used inside a render pass compatible with the one it was built for.
+// Pass the result as the 'pipeline' argument of ImGui_ImplVulkan_RenderDrawData().
+IMGUI_IMPL_API VkPipeline       ImGui_ImplVulkan_CreatePipelineForRenderPass(VkRenderPass render_pass, VkSampleCountFlagBits msaa_samples, uint32_t subpass);
+IMGUI_IMPL_API void             ImGui_ImplVulkan_DestroyPipelineForRenderPass(VkPipeline pipeline);
 IMGUI_IMPL_API bool             ImGui_ImplVulkan_CreateFontsTexture();
 IMGUI_IMPL_API void             ImGui_ImplVulkan_DestroyFontsTexture();
 IMGUI_IMPL_API void             ImGui_ImplVulkan_SetMinImageCount(uint32_t min_image_count); // To override MinImageCount after initialization (e.g. if swap chain is recreated)

@@ -2,23 +2,21 @@
 
 BEGIN_NS(vt)
 
+#define VT_EXPECT(expr) if (!(expr)) [[unlikely]] { throw std::runtime_error(#expr); }
+
 FourCCNode FourCCNode::FindNext(uint32_t tag)
 {
-    auto cc = (uint8_t*)Node;
+    auto cc = (uint8_t const*)Node;
     auto end = cc + Size;
     while (cc < end) {
         auto meta = (GTSFourCCMetadata*)cc;
+        auto nodeEnd = meta->ValuePtr() + meta->ValueLength();
+        VT_EXPECT(nodeEnd <= (uint8_t*)Node + Size);
         if (meta->FourCC == _byteswap_ulong(tag)) {
             return FourCCNode(meta, (uint32_t)(end - cc));
         }
 
-        cc += sizeof(GTSFourCCMetadata);
-        uint32_t valueSize = meta->ValueLength();
-        if (meta->ExtendedLength == 1) {
-            cc += 4;
-        }
-
-        cc += valueSize;
+        cc = nodeEnd;
 
         if (((std::uintptr_t)cc % 4) != 0)
         {
@@ -59,7 +57,7 @@ FourCCNode FourCCNode::Advance()
 FourCCNode FourCCNode::Enter(uint32_t tag)
 {
     auto parent = FindNext(tag);
-    if (parent.Node == nullptr || parent.Node->Format != 1) return FourCCNode(nullptr, 0);
+    if (parent.Node == nullptr || parent.Node->Format != GTSFourCCFormat::Node) return FourCCNode(nullptr, 0);
 
     return FourCCNode((GTSFourCCMetadata*)parent.Node->ValuePtr(), parent.Node->ValueLength());
 }
@@ -67,7 +65,7 @@ FourCCNode FourCCNode::Enter(uint32_t tag)
 int32_t FourCCNode::ReadInt(uint32_t tag)
 {
     auto val = FindNext(tag);
-    if (val.Node == nullptr || val.Node->Format != 3) return 0;
+    if (val.Node == nullptr || val.Node->Format != GTSFourCCFormat::Int) return 0;
 
     return *(int32_t const*)val.Node->ValuePtr();
 }
@@ -75,7 +73,7 @@ int32_t FourCCNode::ReadInt(uint32_t tag)
 bool FourCCNode::ReadBinary(uint32_t tag, void* buf, uint32_t size)
 {
     auto val = FindNext(tag);
-    if (val.Node == nullptr || (val.Node->Format != 8 && val.Node->Format != 0x0D)) return 0;
+    if (val.Node == nullptr || (val.Node->Format != GTSFourCCFormat::IntArray && val.Node->Format != GTSFourCCFormat::GuidArray)) return 0;
 
     auto ccVal = val.Node->ValuePtr();
     auto ccSize = val.Node->ValueLength();
@@ -90,16 +88,19 @@ bool FourCCNode::ReadBinary(uint32_t tag, void* buf, uint32_t size)
 STDWString FourCCNode::ReadString(uint32_t tag)
 {
     auto val = FindNext(tag);
-    if (val.Node == nullptr || val.Node->Format != 2) return {};
+    if (val.Node == nullptr || val.Node->Format != GTSFourCCFormat::String) return {};
 
     auto ccVal = val.Node->ValuePtr();
     auto ccSize = val.Node->ValueLength();
     return STDWString((wchar_t const*)ccVal, ccSize / 2 - 1);
 }
 
+using GTSParameterBlockDesc = std::variant<GTSUniformParameterBlock, GTSBCParameterBlock>;
+
 struct GTSFile
 {
-    FixedString Path;
+    STDString AbsolutePath;
+    STDString DataPath;
     Array<uint8_t> Buf;
 
     GTSHeader* Header;
@@ -107,7 +108,7 @@ struct GTSFile
     std::span<GTSTileSetLevel> Levels;
     Array<std::span<uint32_t>> PerLevelFlatTileIndices;
     std::span<GTSParameterBlockHeader> ParameterBlocks;
-    Array<GTSBCParameterBlock*> ParameterBlockBlobs;
+    Array<GTSParameterBlockDesc> ParameterBlockBlobs;
     FourCCNode FourCC;
     std::span<GTSPageFileInfo> PageFiles;
     std::span<GTSPackedTileID> PackedTileIDs;
@@ -118,59 +119,26 @@ struct GTSFile
     uint32_t MergedY{ 0 };
     uint32_t PageFileOffset{ 0 };
 
-    bool ReadHeader(char const*& reason)
+    void ReadHeader()
     {
         auto buf = Buf.data();
         Header = reinterpret_cast<GTSHeader*>(buf);
-        if (Header->Magic != GTSHeader::GRPGMagic || Header->CurrentVersion != GTSHeader::CurrentVersion) {
-            reason = "Incorrect GTS magic number or version";
-            return false;
-        }
-
-        if (Header->TileWidth != 0x90 || Header->TileHeight != 0x90 || Header->TileBorder != 8) {
-            reason = "Tiles must be 128x128 with max anisotropy of 8";
-            return false;
-        }
-
-        if (Header->TileWidth != 0x90 || Header->TileHeight != 0x90 || Header->TileBorder != 8) {
-            reason = "Tiles must be 128x128 with max anisotropy of 8";
-            return false;
-        }
-
-        if (Header->PageSize != 1024 * 1024) {
-            reason = "Only page size of 1MB is supported";
-            return false;
-        }
-
-        if (Header->NumLayers != 3) {
-            reason = "Tile set must have 3 layers";
-            return false;
-        }
-
-        if (Header->NumLevels == 0) {
-            reason = "Tile set must have at least one mip level";
-            return false;
-        }
-
-        if (Header->NumLevels > 12) {
-            reason = "At most 12 mip levels are supported";
-            return false;
-        }
-
-        return true;
+        VT_EXPECT(Header->Magic == GTSHeader::GRPGMagic);
+        VT_EXPECT(Header->CurrentVersion == GTSHeader::CurrentVersion);
+        VT_EXPECT(Header->TileWidth == 0x90 && Header->TileHeight == 0x90 && Header->TileBorder == 8);
+        VT_EXPECT(Header->PageSize == 1024 * 1024);
+        VT_EXPECT(Header->NumLayers == 3);
+        VT_EXPECT(Header->NumLevels >= 1 && Header->NumLevels < 12);
     }
 
-    bool ReadMetadata(char const*& reason)
+    void ReadMetadata()
     {
         auto buf = Buf.data();
         Layers = std::span<GTSTileSetLayer>(reinterpret_cast<GTSTileSetLayer*>(buf + Header->LayersOffset), Header->NumLayers);
         Levels = std::span<GTSTileSetLevel>(reinterpret_cast<GTSTileSetLevel*>(buf + Header->LevelsOffset), Header->NumLevels);
         PerLevelFlatTileIndices.resize(Header->NumLevels);
 
-        if (Levels[0].Width > 0x1000 || Levels[0].Height > 0x1000) {
-            reason = "Tile set cannot be larger than 4096x4096 tiles";
-            return false;
-        }
+        VT_EXPECT(Levels[0].Width <= 0x1000 && Levels[0].Height <= 0x1000);
 
         for (uint32_t i = 0; i < Header->NumLevels; i++)
         {
@@ -179,10 +147,7 @@ struct GTSFile
             PerLevelFlatTileIndices[i] = std::span<uint32_t>(reinterpret_cast<uint32_t*>(buf + off), sz);
 
             for (auto index : PerLevelFlatTileIndices[i]) {
-                if ((index & 0x80000000u) == 0 && index >= Header->NumFlatTileInfos) {
-                    reason = "Invalid index in per-level flat tile index buffer";
-                    return false;
-                }
+                VT_EXPECT((index & 0x80000000u) != 0 || index < Header->NumFlatTileInfos);
             }
         }
 
@@ -191,23 +156,42 @@ struct GTSFile
         ParameterBlockBlobs.resize((uint32_t)ParameterBlocks.size());
         for (uint32_t i = 0; i < Header->ParameterBlockHeadersCount; i++)
         {
-            if (ParameterBlocks[i].Codec != 9) {
-                reason = "Parameter block with non-BC codec found";
-                return false;
+            void* data = buf + ParameterBlocks[i].FileInfoOffset;
+
+            switch (ParameterBlocks[i].Codec) {
+            case GTSCodec::Uniform:
+            {
+                VT_EXPECT(ParameterBlocks[i].ParameterBlockSize == sizeof(GTSUniformParameterBlock));
+
+                auto uniform = static_cast<GTSUniformParameterBlock*>(data);
+                VT_EXPECT(uniform->Version == 0x42);
+                VT_EXPECT(uniform->Width == 4);
+                VT_EXPECT(uniform->Height == 1);
+                VT_EXPECT(uniform->DataType == GTSDataType::R8G8B8A8_SRGB || uniform->DataType == GTSDataType::X8Y8Z8W8);
+                ParameterBlockBlobs[i] = *uniform;
+                break;
+            }
+                
+            case GTSCodec::BC:
+            {
+                VT_EXPECT(ParameterBlocks[i].ParameterBlockSize == sizeof(GTSBCParameterBlock));
+
+                auto bc = static_cast<GTSBCParameterBlock*>(data);
+                VT_EXPECT(bc->Version == 0x238e);
+                VT_EXPECT(bc->DataType == (uint8_t)GTSDataType::R8G8B8A8_SRGB || bc->DataType == (uint8_t)GTSDataType::X8Y8Z8W8);
+                VT_EXPECT(bc->FourCC == 0x20334342u);
+                ParameterBlockBlobs[i] = *bc;
+                break;
             }
 
-            if (ParameterBlocks[i].ParameterBlockSize != sizeof(GTSBCParameterBlock)) {
-                reason = "Invalid BC parameter block size";
-                return false;
+            default:
+                VT_EXPECT(false && "Parameter block with unknown codec found");
+                break;
             }
-
-            ParameterBlockBlobs[i] = reinterpret_cast<GTSBCParameterBlock*>(buf + ParameterBlocks[i].FileInfoOffset);
         }
-
-        return true;
     }
 
-    bool ReadTiles(char const*& reason)
+    void ReadTiles()
     {
         auto buf = Buf.data();
         PageFiles = std::span<GTSPageFileInfo>(reinterpret_cast<GTSPageFileInfo*>(buf + Header->PageFileMetadataOffset), Header->NumPageFiles);
@@ -215,43 +199,29 @@ struct GTSFile
         FlatTileInfos = std::span<GTSFlatTileInfo>(reinterpret_cast<GTSFlatTileInfo*>(buf + Header->FlatTileInfoOffset), Header->NumFlatTileInfos);
 
         for (auto const& tileInfo : FlatTileInfos) {
-            if (tileInfo.PackedTileIndex >= Header->NumPackedTileIDs) {
-                reason = "Invalid packed tile ID in flat tile info buffer";
-                return false;
-            }
-
-            if (tileInfo.PageFileIndex >= Header->NumPageFiles) {
-                reason = "Invalid page file reference in flat tile info buffer";
-                return false;
-            }
+            VT_EXPECT(tileInfo.PackedTileIndex < Header->NumPackedTileIDs);
+            VT_EXPECT(tileInfo.PageFileIndex < Header->NumPageFiles);
         }
 
         for (auto const& packedTile : PackedTileIDs) {
-            if (packedTile.Layer() >= Header->NumLayers
-                || packedTile.Level() >= Header->NumLevels
-                || packedTile.X() >= Levels[packedTile.Level()].Width
-                || packedTile.Y() >= Levels[packedTile.Level()].Height) {
-                reason = "Invalid tile reference in packed tile buffer";
-                return false;
-            }
+            VT_EXPECT(packedTile.Layer() < Header->NumLayers
+                && packedTile.Level() < Header->NumLevels
+                && packedTile.X() < Levels[packedTile.Level()].Width
+                && packedTile.Y() < Levels[packedTile.Level()].Height);
         }
-
-        return true;
     }
 
-    bool ReadFourCC(char const*& reason)
+    void ReadFourCC()
     {
         auto buf = Buf.data();
+        VT_EXPECT(Header->FourCCListSize > 0);
         FourCC = FourCCNode(reinterpret_cast<GTSFourCCMetadata*>(buf + Header->FourCCListOffset), Header->FourCCListSize);
 
         auto meta = FourCC.Enter('META');
         auto atls = meta.Enter('ATLS');
         auto txts = atls.Enter('TXTS');
 
-        if (txts.Node == nullptr) {
-            reason = "Texture FourCC metadata missing";
-            return false;
-        }
+        VT_EXPECT(txts.Node != nullptr);
 
         while (txts.Size > 0) {
             auto txtr = txts.Enter('TXTR');
@@ -267,16 +237,50 @@ struct GTSFile
 
             txts = txts.Advance();
         }
-
-        return true;
     }
 
-    bool Read(char const*& reason)
+    void Read()
     {
-        if (!ReadHeader(reason)) return false;
-        if (!ReadMetadata(reason)) return false;
-        if (!ReadFourCC(reason)) return false;
-        if (!ReadTiles(reason)) return false;
+        ReadHeader();
+        ReadMetadata();
+        ReadFourCC();
+        ReadTiles();
+    }
+
+    GTSParameterBlockDesc* FindParameterBlock(uint32_t blockId)
+    {
+        for (uint32_t i = 0; i < ParameterBlocks.size(); i++) {
+            if (ParameterBlocks[i].ParameterBlockID == blockId) {
+                return &ParameterBlockBlobs[i];
+            }
+        }
+
+        return nullptr;
+    }
+
+    bool IsCompatibleWith(GTSFile const& f)
+    {
+        for (uint32_t i = 0; i < f.ParameterBlocks.size(); i++) {
+            auto const& blk = f.ParameterBlockBlobs[i];
+            auto otherBlk = FindParameterBlock(f.ParameterBlocks[i].ParameterBlockID);
+            if (otherBlk != nullptr) {
+                if (blk.index() != otherBlk->index()) {
+                    return false;
+                }
+
+                if (std::holds_alternative<GTSUniformParameterBlock>(blk)) {
+                    // Uniform blocks can't conflict
+                } else if (std::holds_alternative<GTSBCParameterBlock>(blk)) {
+                    auto const& v1 = std::get<GTSBCParameterBlock>(blk);
+                    auto const& v2 = std::get<GTSBCParameterBlock>(*otherBlk);
+                    if (v1.SaveMip != v2.SaveMip
+                        || strncmp(v1.Compression1, v2.Compression1, 16) != 0
+                        || strncmp(v1.Compression2, v2.Compression2, 16) != 0) {
+                        return false;
+                    }
+                }
+            }
+        }
 
         return true;
     }
@@ -433,7 +437,7 @@ struct FourCCWriter
         }
     }
 
-    void BeginElement(uint32_t cc, uint8_t format)
+    void BeginElement(uint32_t cc, GTSFourCCFormat format)
     {
         Stack.push_back(Offset);
         auto meta = Advance<GTSFourCCMetadata>();
@@ -446,10 +450,10 @@ struct FourCCWriter
 
     void BeginNode(uint32_t cc)
     {
-        BeginElement(cc, 1);
+        BeginElement(cc, GTSFourCCFormat::Node);
     }
 
-    void WriteElement(uint32_t cc, uint8_t format, void const* val, uint32_t size)
+    void WriteElement(uint32_t cc, GTSFourCCFormat format, void const* val, uint32_t size)
     {
         auto meta = Advance<GTSFourCCMetadata>();
         meta->FourCC = _byteswap_ulong(cc);
@@ -469,12 +473,12 @@ struct FourCCWriter
 
     void Write(uint32_t cc, uint32_t val)
     {
-        WriteElement(cc, 3, &val, sizeof(uint32_t));
+        WriteElement(cc, GTSFourCCFormat::Int, &val, sizeof(uint32_t));
     }
 
     void Write(uint32_t cc, STDWString val)
     {
-        WriteElement(cc, 2, val.c_str(), (val.size() + 1) * 2);
+        WriteElement(cc, GTSFourCCFormat::String, val.c_str(), (val.size() + 1) * 2);
     }
 
     void EndNode()
@@ -490,6 +494,7 @@ struct FourCCWriter
 
 struct GTSStitchedFile
 {
+    uint32_t Index{ 0 };
     Array<GTSFile*> TileSets;
     STDString OutputPath;
 
@@ -498,7 +503,7 @@ struct GTSStitchedFile
     Array<GTSTileSetLevel> Levels;
     Array<Array<uint32_t>> PerLevelFlatTileIndices;
     Array<GTSParameterBlockHeader> ParameterBlocks;
-    Array<GTSBCParameterBlock> ParameterBlockBlobs;
+    Array<GTSParameterBlockDesc> ParameterBlockBlobs;
     Array<GTSPageFileInfo> PageFiles;
     Array<GTSPackedTileID> PackedTileIDs;
     Array<GTSFlatTileInfo> FlatTileInfos;
@@ -546,7 +551,7 @@ struct GTSStitchedFile
         }
 
         for (auto tileSet : TileSets) {
-            DEBUG("Adding source GTS: %s (%d x %d tiles)", tileSet->Path.GetString(), tileSet->Levels[0].Width, tileSet->Levels[0].Height);
+            DEBUG("Adding source GTS: %s (%d x %d tiles)", tileSet->AbsolutePath.c_str(), tileSet->Levels[0].Width, tileSet->Levels[0].Height);
             AddTileSet(tileSet);
         }
     }
@@ -573,8 +578,8 @@ struct GTSStitchedFile
 
     void AddTileSet(GTSFile* tileSet)
     {
-        STDWString gtsDir;
-        auto gtsPath = tileSet->Path.GetStringView();
+         STDWString gtsDir;
+        auto gtsPath = tileSet->DataPath;
         auto sep = gtsPath.find_last_of('/');
         if (sep != StringView::npos) {
             gtsDir = FromUTF8(gtsPath.substr(0, sep + 1));
@@ -598,7 +603,7 @@ struct GTSStitchedFile
 
         for (uint32_t i = 0; i < tileSet->ParameterBlocks.size(); i++) {
             bool found{ false };
-            for (uint32_t j = 0; i < ParameterBlocks.size(); j++) {
+            for (uint32_t j = 0; j < ParameterBlocks.size(); j++) {
                 if (ParameterBlocks[j].ParameterBlockID == tileSet->ParameterBlocks[i].ParameterBlockID) {
                     found = true;
                     break;
@@ -607,7 +612,7 @@ struct GTSStitchedFile
 
             if (!found) {
                 ParameterBlocks.push_back(tileSet->ParameterBlocks[i]);
-                ParameterBlockBlobs.push_back(*tileSet->ParameterBlockBlobs[i]);
+                ParameterBlockBlobs.push_back(tileSet->ParameterBlockBlobs[i]);
             }
         }
 
@@ -682,8 +687,8 @@ struct GTSStitchedFile
             FourCC.Write('XXXX', tex.X);
             FourCC.Write('YYYY', tex.Y);
             FourCC.Write('ADDR', L"None");
-            FourCC.WriteElement('SRGB', 8, srgb, sizeof(srgb));
-            FourCC.WriteElement('THMB', 0xD, thmb, sizeof(thmb));
+            FourCC.WriteElement('SRGB', GTSFourCCFormat::IntArray, srgb, sizeof(srgb));
+            FourCC.WriteElement('THMB', GTSFourCCFormat::GuidArray, thmb, sizeof(thmb));
             FourCC.EndNode(); // TXTR
         }
 
@@ -750,7 +755,10 @@ struct GTSStitchedFile
         Header.ParameterBlockHeadersCount = ParameterBlocks.size();
         Header.ThumbnailsOffset = 0;
 
-        OutputPath = "SEMergedTileSet.gts";
+        OutputPath = "SEMergedTileSet_";
+        OutputPath += std::to_string(Index);
+        OutputPath += ".gts";
+
         auto gtsPath = GetStaticSymbols().ToPath(OutputPath, PathRootType::Data, true);
         std::ofstream f(gtsPath.c_str(), std::ios::out | std::ios::binary);
 
@@ -758,6 +766,8 @@ struct GTSStitchedFile
             f.close();
 
             OutputPath = "SEMergedTileSet_";
+            OutputPath += std::to_string(Index);
+            OutputPath += "_";
             OutputPath += std::to_string(GetCurrentProcessId());
             OutputPath += ".gts";
             gtsPath = GetStaticSymbols().ToPath(OutputPath, PathRootType::Data, true);
@@ -783,8 +793,15 @@ struct GTSStitchedFile
         f.write((char const*)Levels.data(), sizeof(GTSTileSetLevel) * Levels.size());
 
         for (uint32_t i = 0; i < ParameterBlocks.size(); i++) {
+            auto const& blk = ParameterBlockBlobs[i];
             ParameterBlocks[i].FileInfoOffset = (uint32_t)f.tellp();
-            f.write((char const*)&ParameterBlockBlobs[i], sizeof(GTSBCParameterBlock));
+            if (std::holds_alternative<GTSUniformParameterBlock>(blk)) {
+                auto const& p = std::get<GTSUniformParameterBlock>(blk);
+                f.write((char const*)&p, sizeof(p));
+            } else {
+                auto const& p = std::get<GTSBCParameterBlock>(blk);
+                f.write((char const*)&p, sizeof(p));
+            }
         }
 
         Header.ParameterBlockHeadersOffset = (uint32_t)f.tellp();
@@ -813,5 +830,48 @@ struct GTSStitchedFile
         return true;
     }
 };
+
+struct GTSStitchedFileGroup
+{
+    uint32_t Index;
+    Array<GTSFile*> TileSets;
+
+    bool IsCompatible(GTSFile const& f)
+    {
+        for (auto tileSet : TileSets) {
+            if (!tileSet->IsCompatibleWith(f)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+};
+
+Array<GTSStitchedFileGroup> ComputeGroups(Array<GTSFile*> const& tileSets)
+{
+    Array<GTSStitchedFileGroup> groups;
+
+    for (auto tileSet : tileSets) {
+        bool matched{ false };
+        for (auto& group : groups) {
+            if (group.IsCompatible(*tileSet)) {
+                group.TileSets.push_back(tileSet);
+                matched = true;
+                break;
+            }
+        }
+
+        if (!matched) {
+            groups.push_back(GTSStitchedFileGroup{
+                .Index = groups.size()
+            });
+            groups[groups.size() - 1].TileSets.push_back(tileSet);
+        }
+    }
+
+    return groups;
+}
+
 
 END_NS()

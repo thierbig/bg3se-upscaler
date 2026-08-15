@@ -987,6 +987,33 @@ static void ImGui_ImplVulkan_CreatePipeline(VkDevice device, const VkAllocationC
     check_vk_result(err);
 }
 
+// BG3SE: see header. Builds an additional pipeline against an arbitrary render pass, reusing the
+// shader modules and pipeline layout already created by ImGui_ImplVulkan_CreateDeviceObjects().
+VkPipeline ImGui_ImplVulkan_CreatePipelineForRenderPass(VkRenderPass render_pass, VkSampleCountFlagBits msaa_samples, uint32_t subpass)
+{
+    ImGui_ImplVulkan_Data* bd = ImGui_ImplVulkan_GetBackendData();
+    if (bd == nullptr || render_pass == VK_NULL_HANDLE)
+        return VK_NULL_HANDLE;
+
+    ImGui_ImplVulkan_InitInfo* v = &bd->VulkanInitInfo;
+    if (v->Device == VK_NULL_HANDLE || bd->PipelineLayout == VK_NULL_HANDLE)
+        return VK_NULL_HANDLE;
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    ImGui_ImplVulkan_CreatePipeline(v->Device, v->Allocator, v->PipelineCache, render_pass, msaa_samples, &pipeline, subpass);
+    return pipeline;
+}
+
+void ImGui_ImplVulkan_DestroyPipelineForRenderPass(VkPipeline pipeline)
+{
+    ImGui_ImplVulkan_Data* bd = ImGui_ImplVulkan_GetBackendData();
+    if (bd == nullptr || pipeline == VK_NULL_HANDLE)
+        return;
+
+    ImGui_ImplVulkan_InitInfo* v = &bd->VulkanInitInfo;
+    vkDestroyPipeline(v->Device, pipeline, v->Allocator);
+}
+
 bool ImGui_ImplVulkan_CreateDeviceObjects()
 {
     ImGui_ImplVulkan_Data* bd = ImGui_ImplVulkan_GetBackendData();

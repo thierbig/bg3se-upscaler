@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
       - name: Checkout
@@ -73,6 +73,7 @@ jobs:
           msbuild ".\External\ziplib\ZipLib.sln"
           "/p:Configuration=Release"
           "/p:Platform=x64"
+          "/p:PlatformToolset=v143"
           /t:ZipLib:Rebuild
           /m
           /nologo

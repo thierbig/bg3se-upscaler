@@ -42,6 +42,7 @@ struct ExtenderConfig
     bool InsanityCheck{ false };
     bool LocalMessagePassing{ true };
     bool Optick{ false };
+    bool MergeVirtualTextures{ false };
 
 #if defined(OSI_EXTENSION_BUILD)
 #if defined(_DEBUG)
@@ -54,6 +55,9 @@ struct ExtenderConfig
 #endif // defined(OSI_EXTENSION_BUILD)
 
     bool ClearOnReset{ true };
+    // DIAGNOSTIC (temporary): how much of the NGX overlay composite to run.
+    //   0 = off, 1 = layout barriers only, 2 = + render pass, 3 = + ImGui draw (default)
+    uint32_t NgxOverlayStage{ 3 };
     uint32_t DebuggerPort{ 9999 };
     uint32_t LuaDebuggerPort{ 9998 };
     uint32_t DebugFlags{ 0 };

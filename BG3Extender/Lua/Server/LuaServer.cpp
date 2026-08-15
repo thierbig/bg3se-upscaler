@@ -127,7 +127,7 @@ namespace bg3se::esv::lua
 
     ServerState* ServerState::FromLua(lua_State* L)
     {
-        return *reinterpret_cast<ServerState**>(lua_getextraspace(L));
+        return *static_cast<ServerState**>(lua_getextraspace(L));
     }
 
     ServerState::ServerState(ExtensionState& state, uint32_t generationId)
@@ -202,7 +202,7 @@ namespace bg3se::esv::lua
 
     ecs::EntityWorld* ServerState::GetEntityWorld()
     {
-        return GetStaticSymbols().GetServerEntityWorld();
+        return gExtender->GetServer().GetEntityHelpers().GetEntityWorld();
     }
 
 
@@ -366,6 +366,9 @@ namespace bg3se::esv
             LuaServerPin lua(*this);
             if (lua) {
                 lua->RestoreModPersistentVars(*modTable, vars);
+                if (vars.size() > 3) {
+                    WARN("Mod %s: PersistentVars is deprecated; consider using ModVars/UserVars instead", mod.GetString());
+                }
             }
         } else {
             WARN("Savegame has persistent variables for mod %s, but it is not loaded or has no ModTable! Variables may be lost on next save!", mod.GetString());

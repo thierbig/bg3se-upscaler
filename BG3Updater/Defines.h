@@ -5,5 +5,11 @@
 #define UPDATER_CHANNEL "Release"
 #define UPDATER_CHANNEL_GAME ""
 #define UPDATER_CHANNEL_EDITOR "Editor"
+#define UPDATER_RESOURCE_NAME "ScriptExtender"
 #define GAME_DLL L"BG3ScriptExtender.dll"
 #define EDITOR_DLL L"BG3EditorScriptExtender.dll"
+#define UPDATER_CONFIG_FILE L"ScriptExtenderUpdaterConfig.json"
+// Manifest download timeout (ms)
+#define MANIFEST_FETCH_TIMEOUT 5000
+// Content package download timeout (ms)
+#define CONTENT_FETCH_TIMEOUT 120000

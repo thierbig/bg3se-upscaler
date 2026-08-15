@@ -182,70 +182,6 @@ private:
     T const* ptr_;
 };
 
-
-template <class TWord, unsigned NumWords>
-struct BitArray
-{
-    static constexpr uint32_t BitsPerWord = sizeof(TWord) * CHAR_BIT;
-    static constexpr uint32_t IndexBitsPerWord = (sizeof(TWord) == 4) ? 5 : 6;
-    static constexpr uint32_t NumBits = NumWords * BitsPerWord;
-
-    TWord Bits[NumWords];
-
-    inline bool operator [] (uint32_t index) const
-    {
-        if (index >= NumBits) {
-            return false;
-        }
-
-        return (Bits[index >> IndexBitsPerWord] & (TWord(1) << (index & (BitsPerWord - 1)))) != 0;
-    }
-
-    inline bool Set(uint32_t index)
-    {
-        if (index >= NumBits) {
-            return false;
-        }
-
-        Bits[index >> IndexBitsPerWord] |= (TWord(1) << (index & (BitsPerWord - 1)));
-        return true;
-    }
-
-    inline bool AtomicSet(uint32_t index)
-    {
-        if (index >= NumBits) {
-            return false;
-        }
-
-        InterlockedOr64((LONG64*)(Bits + (index >> IndexBitsPerWord)), (TWord(1) << (index & (BitsPerWord - 1))));
-        return true;
-    }
-
-    inline bool Clear(uint32_t index)
-    {
-        if (index >= NumBits) {
-            return false;
-        }
-
-        Bits[index >> IndexBitsPerWord] &= ~(TWord(1) << (index & (BitsPerWord - 1)));
-        return true;
-    }
-
-    inline bool IsSet(uint32_t index) const
-    {
-        if (index >= NumBits) {
-            return false;
-        }
-
-        return (Bits[index >> IndexBitsPerWord] & (TWord(1) << (index & (BitsPerWord - 1)))) != 0;
-    }
-
-    inline uint32_t size() const
-    {
-        return NumWords * sizeof(TWord) * CHAR_BIT;
-    }
-};
-
 template <class T>
 class StaticArray
 {
@@ -369,16 +305,16 @@ public:
             T* newBuf;
             if (newSize > 0) {
                 newBuf = GameMemoryAllocator::NewRaw<T>(newSize);
+
+                for (size_type i = 0; i < std::min(size_, newSize); i++) {
+                    new (newBuf + i) T(std::move(buf_[i]));
+                }
+            
+                for (size_type i = std::min(size_, newSize); i < newSize; i++) {
+                    new (newBuf + i) T(initval);
+                }
             } else {
                 newBuf = nullptr;
-            }
-
-            for (size_type i = 0; i < std::min(size_, newSize); i++) {
-                new (newBuf + i) T(std::move(buf_[i]));
-            }
-            
-            for (size_type i = std::min(size_, newSize); i < newSize; i++) {
-                new (newBuf + i) T(initval);
             }
 
             if (buf_ != nullptr) {
@@ -400,16 +336,16 @@ public:
             T* newBuf;
             if (newSize > 0) {
                 newBuf = GameMemoryAllocator::NewRaw<T>(newSize);
+
+                for (size_type i = 0; i < std::min(size_, newSize); i++) {
+                    new (newBuf + i) T(std::move(buf_[i]));
+                }
+
+                for (size_type i = std::min(size_, newSize); i < newSize; i++) {
+                    new (newBuf + i) T();
+                }
             } else {
                 newBuf = nullptr;
-            }
-
-            for (size_type i = 0; i < std::min(size_, newSize); i++) {
-                new (newBuf + i) T(std::move(buf_[i]));
-            }
-            
-            for (size_type i = std::min(size_, newSize); i < newSize; i++) {
-                new (newBuf + i) T();
             }
 
             if (buf_ != nullptr) {

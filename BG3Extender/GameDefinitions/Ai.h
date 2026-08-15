@@ -272,6 +272,25 @@ struct [[bg3::hidden]] AiGridRequestMap
 };
 
 
+struct [[bg3::hidden]] AiFlood : public ProtectedGameObject<AiFlood>
+{
+    void* VMT;
+    EntityHandle MovingObject;
+    uint8_t FloodType;
+    float field_14;
+    float ClimbHeight;
+    uint8_t PathClimbingMode;
+    uint8_t PathDroppingMode;
+    HashSet<FixedString> field_20;
+    int field_50;
+    uint8_t FloodFlags;
+    uint8_t field_55;
+    uint8_t Flags;
+    int MaxIterations;
+    uint64_t field_60;
+};
+
+
 struct AiSomeFloodObj
 {
     __int64 field_0;
@@ -635,3 +654,53 @@ struct GridStructure
 };
 
 END_NS()
+
+BEGIN_NS(navcloud)
+
+struct TilePos
+{
+    glm::ivec3 field_0;
+    glm::ivec3 field_C;
+
+    inline bool operator == (TilePos const& o) const
+    {
+        return field_0 == o.field_0
+            && field_C == o.field_C;
+    }
+};
+
+struct Tile
+{
+    uint8_t field_0;
+};
+
+struct Region
+{
+    int DensityType;
+    HashMap<glm::ivec3, HashSet<EntityHandle>> field_8;
+    Array<Tile> field_48;
+};
+
+struct TileInfo
+{
+    TilePos Pos;
+    Region* Region;
+    Tile* Tile;
+};
+
+END_NS()
+
+BEGIN_SE()
+
+inline constexpr uint64_t Hash(glm::ivec3 v)
+{
+    return v.x ^ v.y ^ v.z;
+}
+
+template <>
+inline uint64_t HashMapHash<navcloud::TilePos>(navcloud::TilePos const& v)
+{
+    return HashMix(Hash(v.field_0), Hash(v.field_C));
+}
+
+END_SE()

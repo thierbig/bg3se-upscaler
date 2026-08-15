@@ -7,12 +7,6 @@ BEGIN_SE()
 
 struct MoveableObject;
 
-struct AABound
-{
-    glm::vec3 Min;
-    glm::vec3 Max;
-};
-
 struct [[bg3::hidden]] Pose : ProtectedGameObject<Pose>
 {
     glm::mat3x4* Pose1;
@@ -849,7 +843,6 @@ struct [[bg3::component]] LightComponent : public MoveableObject
     EntityHandle AssociatedScene;
     uint16_t CullFlags;
     FixedString UUID;
-    [[bg3::hidden]] void* _PAD;
 };
 
 struct LightUpdateFadeRequest
@@ -873,7 +866,6 @@ struct LightSystem : public BaseSystem
     // HashSet<EntityHandle> CheckFlickering;
     // HashSet<EntityHandle> CheckMoving;
 };
-
 
 END_SE()
 

@@ -9,6 +9,8 @@ struct Item : public BaseProxyComponent
 {
     DEFINE_COMPONENT(ServerItem, "esv::Item")
 
+    ItemTemplate* CreateCacheTemplate();
+
     void* VMT;
     void* VMT2;
     EntityHandle field_10;
@@ -33,7 +35,6 @@ struct Item : public BaseProxyComponent
     int32_t TreasureLevel;
     int32_t Amount;
     ItemFlags2 Flags2;
-    [[bg3::hidden]] void* _PAD;
 
     RefReturn<Item> LuaGetSelf() const;
 };

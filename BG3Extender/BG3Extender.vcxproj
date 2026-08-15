@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Game Debug|x64">
@@ -46,10 +46,12 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Game Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
     <TargetName>BG3ScriptExtender</TargetName>
+    <CodeAnalysisRuleSet>..\CodeAnalysis.ruleset</CodeAnalysisRuleSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Game Release|x64'">
     <LinkIncremental>false</LinkIncremental>
     <TargetName>BG3ScriptExtender</TargetName>
+    <CodeAnalysisRuleSet>..\CodeAnalysis.ruleset</CodeAnalysisRuleSet>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Game Debug|x64'">
     <ClCompile>
@@ -145,6 +147,7 @@ $(SolutionDir)x64\Release\ResourceBundler.exe "$(ProjectDir)LuaScripts" "$(Proje
     <ClInclude Include="Extender\Shared\ScriptHelpers.h" />
     <ClInclude Include="Extender\Shared\StatLoadOrderHelper.h" />
     <ClInclude Include="Extender\Shared\tinyxml2.h" />
+    <ClInclude Include="Extender\Shared\UpdaterAPI.h" />
     <ClInclude Include="Extender\Shared\UseActions.h" />
     <ClInclude Include="Extender\Shared\UserVariables.h" />
     <ClInclude Include="Extender\Shared\Utils.h" />
@@ -159,16 +162,26 @@ $(SolutionDir)x64\Release\ResourceBundler.exe "$(ProjectDir)LuaScripts" "$(Proje
     <ClInclude Include="GameDefinitions\Base\Base.h" />
     <ClInclude Include="GameDefinitions\Base\ExposedTypes.h" />
     <ClInclude Include="GameDefinitions\Base\Genome.h" />
+    <ClInclude Include="GameDefinitions\Base\Lock.h" />
     <ClInclude Include="GameDefinitions\Base\LuaAnnotations.h" />
     <ClInclude Include="GameDefinitions\Base\Serialization.h" />
     <ClInclude Include="GameDefinitions\Base\BaseTypeInformation.h" />
     <ClInclude Include="GameDefinitions\Base\ForwardDeclarations.h" />
+    <ClInclude Include="GameDefinitions\Base\TypeId.h" />
+    <ClInclude Include="GameDefinitions\Base\TypeMetadata.h" />
+    <ClInclude Include="GameDefinitions\Base\WindowsSlim.h" />
     <ClInclude Include="GameDefinitions\Character.h" />
     <ClInclude Include="GameDefinitions\Base\CommonTypes.h" />
     <ClInclude Include="GameDefinitions\CharacterCreation.h" />
     <ClInclude Include="GameDefinitions\Components\ActionResources.h" />
     <ClInclude Include="GameDefinitions\Components\Death.h" />
+    <ClInclude Include="GameDefinitions\Components\Dummy.h" />
     <ClInclude Include="GameDefinitions\Components\Effect.h" />
+    <ClInclude Include="GameDefinitions\Components\Fade.h" />
+    <ClInclude Include="GameDefinitions\Components\Instancing.h" />
+    <ClInclude Include="GameDefinitions\Components\Level.h" />
+    <ClInclude Include="GameDefinitions\Components\Physics.h" />
+    <ClInclude Include="GameDefinitions\Components\Script.h" />
     <ClInclude Include="GameDefinitions\Components\Sound.h" />
     <ClInclude Include="GameDefinitions\Components\SpellCast.h" />
     <ClInclude Include="GameDefinitions\Components\SpellCastShared.h" />
@@ -216,6 +229,8 @@ $(SolutionDir)x64\Release\ResourceBundler.exe "$(ProjectDir)LuaScripts" "$(Proje
     <ClInclude Include="GameDefinitions\EntitySystemHelpers.h" />
     <ClInclude Include="GameDefinitions\EnumRepository.h" />
     <ClInclude Include="GameDefinitions\GameState.h" />
+    <ClInclude Include="GameDefinitions\Generated\EnumerationMeta.h" />
+    <ClInclude Include="GameDefinitions\Generated\PropertyMapMeta.h" />
     <ClInclude Include="GameDefinitions\GlobalFixedStrings.h" />
     <ClInclude Include="GameDefinitions\Hit.h" />
     <ClInclude Include="GameDefinitions\Input.h" />
@@ -228,6 +243,7 @@ $(SolutionDir)x64\Release\ResourceBundler.exe "$(ProjectDir)LuaScripts" "$(Proje
     <ClInclude Include="GameDefinitions\Item.h" />
     <ClInclude Include="GameDefinitions\Module.h" />
     <ClInclude Include="GameDefinitions\Net.h" />
+    <ClInclude Include="GameDefinitions\ObjectFactory.h" />
     <ClInclude Include="GameDefinitions\Osiris.h" />
     <ClInclude Include="GameDefinitions\GuidResources.h" />
     <ClInclude Include="GameDefinitions\Controllers\OsirisTask.h" />
@@ -240,6 +256,7 @@ $(SolutionDir)x64\Release\ResourceBundler.exe "$(ProjectDir)LuaScripts" "$(Proje
     <ClInclude Include="GameDefinitions\Skeleton.h" />
     <ClInclude Include="GameDefinitions\Sound.h" />
     <ClInclude Include="GameDefinitions\Stats\Common.h" />
+    <ClInclude Include="GameDefinitions\Stats\Entries.h" />
     <ClInclude Include="GameDefinitions\Stats\Expression.h" />
     <ClInclude Include="GameDefinitions\Stats\Functors.h" />
     <ClInclude Include="GameDefinitions\Stats\Prototype.h" />
@@ -293,6 +310,7 @@ $(SolutionDir)x64\Release\ResourceBundler.exe "$(ProjectDir)LuaScripts" "$(Proje
     <ClInclude Include="Lua\Shared\EntityComponentEvents.h" />
     <ClInclude Include="Lua\Shared\EntityEventHelpers.h" />
     <ClInclude Include="Lua\Shared\EntityReplicationEvents.h" />
+    <ClInclude Include="Lua\Shared\ExposedTypes.h" />
     <ClInclude Include="Lua\Shared\LuaBundle.h" />
     <ClInclude Include="Lua\Shared\LuaCustomizations.h" />
     <ClInclude Include="Lua\Shared\LuaDelegate.h" />
@@ -300,7 +318,6 @@ $(SolutionDir)x64\Release\ResourceBundler.exe "$(ProjectDir)LuaScripts" "$(Proje
     <ClInclude Include="Lua\Shared\LuaModule.h" />
     <ClInclude Include="Lua\Shared\LuaStats.h" />
     <ClInclude Include="Lua\Shared\LuaTraits.h" />
-    <ClInclude Include="Lua\Shared\LuaTypeTraits.h" />
     <ClInclude Include="Lua\Shared\LuaTypeValidators.h" />
     <ClInclude Include="Lua\Shared\Proxies\LuaArrayProxy.h" />
     <ClInclude Include="Lua\Shared\Proxies\LuaBitfieldValue.h" />
@@ -431,6 +448,7 @@ $(SolutionDir)x64\Release\ResourceBundler.exe "$(ProjectDir)LuaScripts" "$(Proje
     <None Include="Extender\Shared\ExtenderProtocol.proto" />
     <None Include="Extender\Shared\StatLoadOrderHelper.inl" />
     <None Include="Extender\Shared\ThreadedExtenderState.inl" />
+    <None Include="Extender\Shared\UpdaterAPI.inl" />
     <None Include="Extender\Shared\UseActions.inl" />
     <None Include="Extender\Shared\UserVariables.inl" />
     <None Include="Extender\Shared\VirtualTextureMerge.inl" />
@@ -438,11 +456,13 @@ $(SolutionDir)x64\Release\ResourceBundler.exe "$(ProjectDir)LuaScripts" "$(Proje
     <None Include="GameDefinitions\Ai.inl" />
     <None Include="GameDefinitions\AllSpark.inl" />
     <None Include="GameDefinitions\Animation.inl" />
+    <None Include="GameDefinitions\Base\Lock.inl" />
     <None Include="GameDefinitions\Base\TypeInformation.inl" />
     <None Include="GameDefinitions\Components\AllComponentTypes.inl" />
     <None Include="GameDefinitions\Components\AllSystemTypes.inl" />
     <None Include="GameDefinitions\Components\Effect.inl" />
     <None Include="GameDefinitions\Components\ExposedSystemTypes.inl" />
+    <None Include="GameDefinitions\Components\Level.inl" />
     <None Include="GameDefinitions\Components\Spell.inl" />
     <None Include="GameDefinitions\Controllers\Action.inl" />
     <None Include="GameDefinitions\Controllers\Behaviour.inl" />
@@ -464,13 +484,13 @@ $(SolutionDir)x64\Release\ResourceBundler.exe "$(ProjectDir)LuaScripts" "$(Proje
     <None Include="GameDefinitions\PropertyMaps\Events.inl" />
     <None Include="GameDefinitions\PropertyMaps\IMGUI.inl" />
     <None Include="GameDefinitions\PropertyMaps\ServerObjects.inl" />
-    <None Include="GameDefinitions\PropertyMaps\SurfaceActions.inl" />
     <None Include="GameDefinitions\PropertyMaps\UI.inl" />
     <None Include="GameDefinitions\Render.inl" />
     <None Include="GameDefinitions\RootTemplates.inl" />
     <None Include="GameDefinitions\Stats\Expression.inl" />
     <None Include="GameDefinitions\Stats\Functors.inl" />
     <None Include="GameDefinitions\Status.inl" />
+    <None Include="GameDefinitions\Surface.inl" />
     <None Include="GameHooks\EngineHooks.inl" />
     <None Include="LuaScripts\BuiltinLibrary.lua" />
     <None Include="LuaScripts\BuiltinLibraryClient.lua" />

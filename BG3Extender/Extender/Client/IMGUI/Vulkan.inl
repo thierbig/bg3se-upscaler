@@ -9,6 +9,10 @@
 #include <backends/imgui_impl_vulkan.h>
 #include <imgui_internal.h>
 #include <unordered_map>
+#include <iterator>
+#include <cstdlib>
+#include <vector>
+#include <psapi.h>
 
 #ifndef NVSDK_CONV
 #ifdef __GNUC__
@@ -211,7 +215,14 @@ public:
         init_info.DescriptorPool = descriptorPool_;
         init_info.Subpass = 0;
         init_info.MinImageCount = swapchain_.images_.size();
-        init_info.ImageCount = swapchain_.images_.size();
+        // ImGui rotates its vertex/index buffers through a ring of ImageCount slots, one per
+        // RenderDrawData call, assuming the GPU is at most ImageCount frames behind. Frame
+        // generation queues presents deeper than the swapchain image count, so a slot can be
+        // rewritten while a command buffer from several frames ago is still reading it -
+        // corrupted geometry on screen, and a device loss when the stale index data runs off the
+        // end of the vertex buffer. Deepen the ring so FG latency fits inside it; the cost is a
+        // few extra small per-frame buffers.
+        init_info.ImageCount = swapchain_.images_.size() * 4;
         init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
         init_info.Allocator = nullptr;
         init_info.CheckVkResultFn = [](VkResult err) {
@@ -244,6 +255,10 @@ public:
         if (!initialized_) return;
 
         IMGUI_DEBUG("VK shutdown");
+
+        // Must run before ImGui_ImplVulkan_Shutdown(), which takes the backend data our pipeline
+        // helper needs.
+        resetNgxResources();
 
         ImGui_ImplVulkan_Shutdown();
         drawViewport_ = -1;
@@ -347,7 +362,7 @@ public:
     {
         if (!initialized_) return;
 
-        auto imageView = reinterpret_cast<VkImageView>(opaqueHandle);
+        auto imageView = static_cast<VkImageView>(opaqueHandle);
         auto desc = textureDescriptors_.get_or_default(imageView, 0);
         if (desc) {
             ImGui_ImplVulkan_RemoveTexture(desc);
@@ -359,7 +374,7 @@ public:
 
     std::optional<ImTextureID> BindTexture(TextureOpaqueHandle opaqueHandle) override
     {
-        auto imageView = reinterpret_cast<VkImageView>(opaqueHandle);
+        auto imageView = static_cast<VkImageView>(opaqueHandle);
         auto desc = textureDescriptors_.get_or_default(imageView, 0);
         if (!desc) {
             desc = ImGui_ImplVulkan_AddTexture(sampler_, imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -505,6 +520,31 @@ private:
             vkGetDeviceProcAddr(*pDevice, "vkDestroySwapchainKHR"));
         PFN_vkQueuePresentKHR gameQueuePresentKHR = reinterpret_cast<PFN_vkQueuePresentKHR>(
             vkGetDeviceProcAddr(*pDevice, "vkQueuePresentKHR"));
+
+        // Streamline loads as part of the game's Vulkan init, so it is normally not present yet
+        // when EnableHooks() runs; the LoadLibraryW() there also only succeeds if the upscaler
+        // ships sl.interposer.dll somewhere on the DLL search path. Resolve again here, where it
+        // is loaded and GetModuleHandleW finds it whatever folder it came from. Without this we
+        // silently fall back to the game's own entry points, bypassing Streamline's swapchain
+        // proxy - DLSS upscaling still works, but frame generation never gets injected.
+        if (sl_ == nullptr) {
+            sl_ = GetModuleHandleW(L"sl.interposer.dll");
+            if (sl_ != nullptr) {
+                dlssgPresentFunction_ = reinterpret_cast<PFN_vkQueuePresentKHR>(
+                    GetProcAddress(sl_, "vkQueuePresentKHR"));
+                dlssgCreateSwapchainKHR_ = reinterpret_cast<PFN_vkCreateSwapchainKHR>(
+                    GetProcAddress(sl_, "vkCreateSwapchainKHR"));
+            }
+        }
+
+        if (dlssgPresentFunction_ != nullptr && dlssgCreateSwapchainKHR_ != nullptr) {
+            INFO("IMGUI: chaining present/swapchain through sl.interposer.dll");
+        } else {
+            WARN("IMGUI: sl.interposer.dll not available at device creation (handle %p, present %p, "
+                "createSwapchain %p); hooking the game's entry points directly - DLSS frame "
+                "generation will not be injected",
+                sl_, dlssgPresentFunction_, dlssgCreateSwapchainKHR_);
+        }
 
         PFN_vkQueuePresentKHR nextPresent = dlssgPresentFunction_ ? dlssgPresentFunction_ : gameQueuePresentKHR;
         PFN_vkCreateSwapchainKHR nextCreateSwapchain = dlssgCreateSwapchainKHR_ ? dlssgCreateSwapchainKHR_ : gameCreateSwapchainKHR;
@@ -898,7 +938,11 @@ private:
             }
         }
 
-        if (initialized_ && drawViewport_ != -1) {
+        if (ngxCompositedThisFrame_) {
+            // Already drawn into the NGX output this frame - drawing again here would double the
+            // overlay and lap ImGui's buffer ring.
+            ngxCompositedThisFrame_ = false;
+        } else if (initialized_ && drawViewport_ != -1) {
             presentPreHook(const_cast<VkPresentInfoKHR*>(pPresentInfo));
         } else {
             //IMGUI_FRAME_DEBUG("vkQueuePresentKHR: Cannot append command buffer - initialized %d, drawViewport %d",
@@ -917,20 +961,87 @@ private:
         // Call original first so NGX completes its work and final image state
         NVSDK_NGX_Result evalRes = orig(InCmdList, InFeatureHandle, InParameters, InCallback);
 
+        if (!ngxHookEnteredLogged_) {
+            ngxHookEnteredLogged_ = true;
+            INFO("IMGUI: NGX EvaluateFeature hook is live");
+        }
+
         if (!initialized_ || !menuVisible_ || evalRes != NVSDK_NGX_Result_Success || !InCmdList || !InParameters)
             return evalRes;
 
+        // Everything below touches state shared with NewFrame()/FinishFrame()/the present hook -
+        // the render pass, framebuffer and pipeline caches, and viewports_[drawViewport_]. This
+        // callback runs on the game's render thread with no synchronisation of its own, so take
+        // the same lock those paths use. Without it, concurrent inserts corrupt the caches; the
+        // observable symptom was the overlay pipeline being built twice for one format, followed
+        // by crashes and hangs whose timing wandered from frame to frame.
+        //
+        // The lock is taken after orig() so NGX's own work is never serialised against us.
+        std::lock_guard _(globalResourceLock_);
+
+        // Re-check under the lock, since the backend may have been torn down while we waited.
+        if (!initialized_ || drawViewport_ < 0)
+            return evalRes;
+
+        // DIAGNOSTIC (temporary): NgxOverlayStage bisects the composite without a rebuild.
+        //   0 = do nothing              (control - is the composite the cause at all?)
+        //   1 = layout barriers only    (tests the VK_IMAGE_LAYOUT_GENERAL assumption)
+        //   2 = + render pass, no draw  (tests the framebuffer / render pass)
+        //   3 = + ImGui draw            (full, default)
+        // Set via NgxOverlayStage in ScriptExtenderSettings.json.
+        if (ngxStage_ < 0) {
+            ngxStage_ = (int)gExtender->GetConfig().NgxOverlayStage;
+            if (ngxStage_ < 0 || ngxStage_ > 3) ngxStage_ = 3;
+            INFO("IMGUI: NGX composite stage %d "
+                "(0=off 1=barriers 2=+renderpass 3=full) - set NgxOverlayStage in "
+                "ScriptExtenderSettings.json to change",
+                ngxStage_);
+        }
+
+        if (ngxStage_ == 0)
+            return evalRes;
+
+        // Stay clear of swapchain transitions. Around an alt-tab the upscaler tears down and
+        // recreates its NGX resources; a composite recorded near that window can reference an
+        // output view whose image is destroyed before the command buffer completes. A barrier
+        // survives that (it only records a dependency); a LOAD_OP_LOAD render pass reads memory
+        // through the view and faults. frameNo_ restarts at 0 on every backend (re)init, so
+        // holding off for a second of frames keeps the composite out of the transition window.
+        // The present-path overlay covers the menu during warmup.
+        if (frameNo_ < NgxCompositeWarmupFrames)
+            return evalRes;
+
+        // Resolve lazily and keep retrying until found - the providing module may not be loaded
+        // yet the first time we get here, and caching a null would disable the overlay for good.
+        if (ngxGetVoidPointer_ == nullptr) {
+            forEachNgxCandidateModule([this](HMODULE mod, wchar_t const* label) {
+                auto proc = reinterpret_cast<PFN_NVSDK_NGX_Parameter_GetVoidPointer>(
+                    GetProcAddress(mod, "NVSDK_NGX_Parameter_GetVoidPointer"));
+                if (proc == nullptr) return false;
+                ngxGetVoidPointer_ = proc;
+                INFO("IMGUI: resolved NVSDK_NGX_Parameter_GetVoidPointer in %S", label);
+                return true;
+            });
+        }
+
+        if (ngxGetVoidPointer_ == nullptr) {
+            if (!ngxOutputUnavailableLogged_) {
+                ngxOutputUnavailableLogged_ = true;
+                ERR("IMGUI: NVSDK_NGX_Parameter_GetVoidPointer not exported by any loaded module; "
+                    "cannot read the NGX output image");
+            }
+            return evalRes;
+        }
+
         // Extract NGX output resource as a Vulkan image view
         void* outPtr = nullptr;
-        static PFN_NVSDK_NGX_Parameter_GetVoidPointer pGetVoidPtr = []() -> PFN_NVSDK_NGX_Parameter_GetVoidPointer {
-            HMODULE mod = GetModuleHandleW(L"sl.interposer.dll");
-            if (!mod) mod = GetModuleHandleW(L"nvngx_dlss.dll");
-            if (!mod) mod = GetModuleHandleW(L"nvngx.dll");
-            if (!mod) return nullptr;
-            return reinterpret_cast<PFN_NVSDK_NGX_Parameter_GetVoidPointer>(GetProcAddress(mod, "NVSDK_NGX_Parameter_GetVoidPointer"));
-        }();
-        if (!pGetVoidPtr || pGetVoidPtr(const_cast<NVSDK_NGX_Parameter*>(InParameters), NVSDK_NGX_Parameter_Output, &outPtr) != NVSDK_NGX_Result_Success || !outPtr)
+        if (ngxGetVoidPointer_(const_cast<NVSDK_NGX_Parameter*>(InParameters), NVSDK_NGX_Parameter_Output, &outPtr) != NVSDK_NGX_Result_Success || !outPtr) {
+            if (!ngxNoOutputResourceLogged_) {
+                ngxNoOutputResourceLogged_ = true;
+                ERR("IMGUI: NGX parameter block has no '%s' output resource", NVSDK_NGX_Parameter_Output);
+            }
             return evalRes;
+        }
 
         auto* outResVK = reinterpret_cast<NVSDK_NGX_Resource_VK*>(outPtr);
         const NVSDK_NGX_ImageViewInfo_VK& iv = outResVK->Resource.ImageViewInfo;
@@ -983,16 +1094,33 @@ private:
             return rp;
         };
 
-        VkRenderPass rp = getOrCreateRenderPass(targetFormat);
-        if (rp == VK_NULL_HANDLE)
-            return evalRes;
-
-        // Get/create framebuffer for this view
+        VkRenderPass rp = VK_NULL_HANDLE;
+        VkPipeline overlayPipeline = VK_NULL_HANDLE;
         VkFramebuffer fb = VK_NULL_HANDLE;
-        auto itFB = viewToFramebuffer_.find(targetView);
-        if (itFB != viewToFramebuffer_.end()) {
-            fb = itFB->second;
-        } else {
+
+        if (ngxStage_ >= 2) {
+            rp = getOrCreateRenderPass(targetFormat);
+            if (rp == VK_NULL_HANDLE)
+                return evalRes;
+        }
+
+        // Bail before touching the command buffer if we have no compatible pipeline - drawing
+        // with an incompatible one is a device-lost, not a missing overlay.
+        if (ngxStage_ >= 3) {
+            overlayPipeline = getOrCreateNgxPipeline(targetFormat, rp);
+            if (overlayPipeline == VK_NULL_HANDLE)
+                return evalRes;
+        }
+
+        if (ngxStage_ >= 2) {
+            // NGX rotates through several output image views, and Vulkan is free to reuse a
+            // handle value once the view behind it is destroyed. Caching a framebuffer against
+            // a VkImageView therefore hands us, sooner or later, a framebuffer built from a view
+            // that no longer exists - which faults the GPU. Build one per composite and retire it
+            // a few frames later, once the GPU is certainly past it.
+            retireStaleNgxFramebuffers();
+            purgeNgxGraveyard();
+
             VkImageView attachments[1] = { targetView };
             VkFramebufferCreateInfo fbInfo{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
             fbInfo.renderPass = rp;
@@ -1002,10 +1130,13 @@ private:
             fbInfo.height = targetH;
             fbInfo.layers = 1;
             VK_CHECK(vkCreateFramebuffer(device_, &fbInfo, nullptr, &fb));
-            viewToFramebuffer_[targetView] = fb;
+
+            if (fb != VK_NULL_HANDLE) {
+                ngxFramebuffers_.push_back({ fb, frameNo_ });
+            }
         }
 
-        if (fb == VK_NULL_HANDLE)
+        if (ngxStage_ >= 2 && fb == VK_NULL_HANDLE)
             return evalRes;
 
         // Transition NGX output to COLOR_ATTACHMENT for overlay
@@ -1033,9 +1164,29 @@ private:
         rpBegin.renderArea.offset = { 0, 0 };
         rpBegin.renderArea.extent = { targetW, targetH };
 
-        vkCmdBeginRenderPass(InCmdList, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
-        (void)injectImGuiIntoCommandBuffer(InCmdList);
-        vkCmdEndRenderPass(InCmdList);
+        bool drawn = false;
+        if (ngxStage_ >= 2) {
+            vkCmdBeginRenderPass(InCmdList, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+            if (ngxStage_ >= 3) {
+                drawn = injectImGuiIntoCommandBuffer(InCmdList, overlayPipeline);
+            }
+            vkCmdEndRenderPass(InCmdList);
+        }
+
+        if (drawn) {
+            // Claim this frame so presentPreHook() does not render the same draw data a second
+            // time. ImGui's Vulkan backend cycles its vertex/index buffers once per
+            // RenderDrawData call over a ring sized to the swapchain image count, so drawing
+            // twice per frame laps that ring and overwrites buffers still in flight.
+            ngxCompositedThisFrame_ = true;
+
+            if (!ngxOverlayDrawnLogged_) {
+                ngxOverlayDrawnLogged_ = true;
+                INFO("IMGUI: drawing overlay into NGX output (%dx%d, format %d); "
+                    "present-time overlay disabled for composited frames",
+                    (int)targetW, (int)targetH, (int)targetFormat);
+            }
+        }
 
         // Transition back to GENERAL so downstream consumers can read
         VkImageMemoryBarrier toGeneral = toColor;
@@ -1056,38 +1207,189 @@ private:
         return evalRes;
     }
 
-    bool injectImGuiIntoCommandBuffer(VkCommandBuffer cmd)
+    bool injectImGuiIntoCommandBuffer(VkCommandBuffer cmd, VkPipeline pipeline)
     {
         if (!initialized_ || drawViewport_ < 0 || !cmd)
             return false;
         auto& vp = viewports_[drawViewport_].Viewport;
         if (!vp.DrawDataP.Valid || vp.DrawDataP.CmdListsCount == 0)
             return false;
-        ImGui_ImplVulkan_RenderDrawData(&vp.DrawDataP, cmd);
+        ImGui_ImplVulkan_RenderDrawData(&vp.DrawDataP, cmd, pipeline);
         return true;
+    }
+
+    // Drop everything the composite cached. The ImGui backend is torn down and rebuilt whenever
+    // the swapchain is recreated - alt-tabbing does it - and NGX recreates its own resources at
+    // the same time, so nothing built against the old ones stays valid.
+    //
+    // Nothing is destroyed here: this runs inside the swapchain-destroy hook, where the game's
+    // render threads may still be submitting, so neither vkDeviceWaitIdle nor destroying
+    // possibly-in-flight objects is safe. Everything moves to a graveyard instead, purged from
+    // the composite path once the rebuilt backend has been running long enough that the old
+    // work is certainly complete.
+    void resetNgxResources()
+    {
+        for (auto const& fb : ngxFramebuffers_) {
+            ngxGraveyardFramebuffers_.push_back(fb.Framebuffer);
+        }
+        for (auto const& pipeline : formatToPipeline_) {
+            if (pipeline.second != VK_NULL_HANDLE) ngxGraveyardPipelines_.push_back(pipeline.second);
+        }
+        for (auto const& renderPass : formatToRenderPass_) {
+            if (renderPass.second != VK_NULL_HANDLE) ngxGraveyardRenderPasses_.push_back(renderPass.second);
+        }
+
+        ngxFramebuffers_.clear();
+        formatToPipeline_.clear();
+        formatToRenderPass_.clear();
+    }
+
+    // Destroy graveyard objects once the rebuilt backend has run for a while. frameNo_ restarts
+    // at 0 on re-init, so a simple threshold works. Called under the backend lock with the
+    // device alive. If the device is destroyed before we get here, the entries are abandoned -
+    // device teardown reclaims them.
+    void purgeNgxGraveyard()
+    {
+        if (frameNo_ < NgxGraveyardPurgeFrame) return;
+        if (ngxGraveyardFramebuffers_.empty() && ngxGraveyardPipelines_.empty()
+            && ngxGraveyardRenderPasses_.empty()) return;
+
+        for (auto fb : ngxGraveyardFramebuffers_) vkDestroyFramebuffer(device_, fb, nullptr);
+        for (auto pipeline : ngxGraveyardPipelines_) vkDestroyPipeline(device_, pipeline, nullptr);
+        for (auto renderPass : ngxGraveyardRenderPasses_) vkDestroyRenderPass(device_, renderPass, nullptr);
+
+        ngxGraveyardFramebuffers_.clear();
+        ngxGraveyardPipelines_.clear();
+        ngxGraveyardRenderPasses_.clear();
+    }
+
+    // Destroy NGX framebuffers the GPU has certainly finished with. Called under the backend
+    // lock from the composite path.
+    void retireStaleNgxFramebuffers()
+    {
+        if (device_ == VK_NULL_HANDLE) {
+            ngxFramebuffers_.clear();
+            return;
+        }
+
+        auto it = ngxFramebuffers_.begin();
+        while (it != ngxFramebuffers_.end()) {
+            auto age = frameNo_ - it->FrameNo;
+            if (age > NgxFramebufferLifetime || age < 0) {
+                vkDestroyFramebuffer(device_, it->Framebuffer, nullptr);
+                it = ngxFramebuffers_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    // ImGui builds its pipeline against the swapchain render pass, but the NGX output is a
+    // different attachment format (B10G11R11_UFLOAT vs the swapchain's B8G8R8A8_UNORM), and a
+    // pipeline may only be used inside a render pass compatible with the one it was built for.
+    // Using the swapchain pipeline here faults the GPU and loses the device, so build one per
+    // output format.
+    VkPipeline getOrCreateNgxPipeline(VkFormat fmt, VkRenderPass renderPass)
+    {
+        auto it = formatToPipeline_.find(fmt);
+        if (it != formatToPipeline_.end()) return it->second;
+
+        auto pipeline = ImGui_ImplVulkan_CreatePipelineForRenderPass(renderPass, VK_SAMPLE_COUNT_1_BIT, 0);
+        formatToPipeline_[fmt] = pipeline;
+
+        if (pipeline == VK_NULL_HANDLE) {
+            ERR("IMGUI: could not build an overlay pipeline for NGX output format %d; "
+                "skipping the overlay rather than drawing with an incompatible pipeline", (int)fmt);
+        } else {
+            INFO("IMGUI: built overlay pipeline for NGX output format %d", (int)fmt);
+        }
+
+        return pipeline;
+    }
+
+    bool installNgxHookFrom(HMODULE mod, wchar_t const* label)
+    {
+        // The C++ and _C entry points take the same argument layout; they differ only in the
+        // callback type, which we forward untouched. Prefer _C, but accept either.
+        static char const* const symbols[] = {
+            "NVSDK_NGX_VULKAN_EvaluateFeature_C",
+            "NVSDK_NGX_VULKAN_EvaluateFeature"
+        };
+
+        for (auto symbol : symbols) {
+            auto proc = GetProcAddress(mod, symbol);
+            if (!proc) continue;
+
+            DetourTransactionBegin();
+            DetourUpdateThread(GetCurrentThread());
+            ngxEvaluateFeatureHook_.Wrap(ResolveFunctionTrampoline(
+                reinterpret_cast<NgxEvaluateFeatureCHookType::BaseFuncType*>(proc)));
+            DetourTransactionCommit();
+            ngxEvaluateFeatureHook_.SetWrapper(&VulkanBackend::ngxEvaluateFeatureCHook, this);
+            INFO("IMGUI: hooked %s in %S", symbol, label);
+            return true;
+        }
+
+        return false;
+    }
+
+    // Which module provides the NGX entry points moves between Streamline and NGX versions - and
+    // between upscaler mods - so try the usual providers by name and then fall back to scanning
+    // every loaded module. Calls fn(module, label) until it returns true.
+    template <class Fn>
+    static bool forEachNgxCandidateModule(Fn&& fn)
+    {
+        static wchar_t const* const knownModules[] = {
+            L"sl.interposer.dll",
+            L"sl.dlss.dll",
+            L"sl.dlss_g.dll",
+            L"nvngx_dlss.dll",
+            L"nvngx.dll",
+            L"_nvngx.dll"
+        };
+
+        for (auto name : knownModules) {
+            auto mod = GetModuleHandleW(name);
+            if (mod != nullptr && fn(mod, name)) return true;
+        }
+
+        DWORD needed{ 0 };
+        if (!EnumProcessModules(GetCurrentProcess(), nullptr, 0, &needed)) return false;
+
+        std::vector<HMODULE> mods(needed / sizeof(HMODULE));
+        if (!EnumProcessModules(GetCurrentProcess(), mods.data(),
+            (DWORD)(mods.size() * sizeof(HMODULE)), &needed)) return false;
+
+        for (auto mod : mods) {
+            wchar_t path[MAX_PATH]{};
+            if (GetModuleFileNameW(mod, path, MAX_PATH) == 0) continue;
+            if (fn(mod, static_cast<wchar_t const*>(path))) return true;
+        }
+
+        return false;
     }
 
     void tryInstallNgxEvaluateFeatureHook()
     {
         if (ngxEvaluateFeatureHook_.IsWrapped()) return;
 
-        auto tryInstallFrom = [&](LPCWSTR modName) -> bool {
-            HMODULE mod = GetModuleHandleW(modName);
-            if (!mod) return false;
-            auto pC = reinterpret_cast<NgxEvaluateFeatureCHookType::BaseFuncType*>(
-                GetProcAddress(mod, "NVSDK_NGX_VULKAN_EvaluateFeature_C"));
-            if (!pC) return false;
-            DetourTransactionBegin();
-            DetourUpdateThread(GetCurrentThread());
-            ngxEvaluateFeatureHook_.Wrap(ResolveFunctionTrampoline(pC));
-            DetourTransactionCommit();
-            ngxEvaluateFeatureHook_.SetWrapper(&VulkanBackend::ngxEvaluateFeatureCHook, this);
-            return true;
-        };
+        // NGX modules load lazily, so this has to keep retrying, but enumerating the module
+        // list every frame is wasteful - probe periodically instead.
+        if (ngxProbeDelay_ > 0) {
+            ngxProbeDelay_--;
+            return;
+        }
+        ngxProbeDelay_ = NgxProbeInterval;
 
-        if (tryInstallFrom(L"sl.interposer.dll")) return;
-        if (tryInstallFrom(L"nvngx_dlss.dll")) return;
-        if (tryInstallFrom(L"nvngx.dll")) return;
+        if (forEachNgxCandidateModule([this](HMODULE mod, wchar_t const* label) {
+            return installNgxHookFrom(mod, label);
+        })) return;
+
+        if (!ngxProbeFailureLogged_) {
+            ngxProbeFailureLogged_ = true;
+            ERR("IMGUI: NVSDK_NGX_VULKAN_EvaluateFeature is not exported by any loaded module; "
+                "the overlay will stay hidden while upscaling is active");
+        }
     }
 
     IMGUIManager& ui_;
@@ -1114,7 +1416,22 @@ private:
 
     HashMap<VkImageView, VkDescriptorSet> textureDescriptors_;
     std::unordered_map<VkFormat, VkRenderPass> formatToRenderPass_;
-    std::unordered_map<VkImageView, VkFramebuffer> viewToFramebuffer_;
+    std::unordered_map<VkFormat, VkPipeline> formatToPipeline_;
+    // Framebuffers built for NGX output views, retired once the GPU is well past them. Keyed by
+    // creation frame rather than by image view, which is not a stable identity.
+    struct NgxFramebuffer
+    {
+        VkFramebuffer Framebuffer;
+        int32_t FrameNo;
+    };
+
+    static constexpr int32_t NgxFramebufferLifetime{ 8 };
+    static constexpr int32_t NgxGraveyardPurgeFrame{ 30 };
+    static constexpr int32_t NgxCompositeWarmupFrames{ 60 };
+    std::vector<NgxFramebuffer> ngxFramebuffers_;
+    std::vector<VkFramebuffer> ngxGraveyardFramebuffers_;
+    std::vector<VkPipeline> ngxGraveyardPipelines_;
+    std::vector<VkRenderPass> ngxGraveyardRenderPasses_;
 
     VkCreateInstanceHookType CreateInstanceHook_;
     VkCreateDeviceHookType CreateDeviceHook_;
@@ -1128,6 +1445,22 @@ private:
     HMODULE sl_{ nullptr };
     PFN_vkQueuePresentKHR dlssgPresentFunction_{ nullptr };
     PFN_vkCreateSwapchainKHR dlssgCreateSwapchainKHR_{ nullptr };
+
+    // Frames between attempts to locate the NGX EvaluateFeature entry point.
+    static constexpr unsigned NgxProbeInterval{ 120 };
+    unsigned ngxProbeDelay_{ 0 };
+    PFN_NVSDK_NGX_Parameter_GetVoidPointer ngxGetVoidPointer_{ nullptr };
+    // One-shot latches so the per-frame paths below report once instead of every frame.
+    bool ngxProbeFailureLogged_{ false };
+    bool ngxHookEnteredLogged_{ false };
+    bool ngxOutputUnavailableLogged_{ false };
+    bool ngxNoOutputResourceLogged_{ false };
+    bool ngxOverlayDrawnLogged_{ false };
+    // Set when the NGX hook composites the overlay; consumed by the present hook so a frame is
+    // never rendered twice.
+    bool ngxCompositedThisFrame_{ false };
+    // BG3SE_NGX_STAGE override; -1 until resolved from the environment.
+    int ngxStage_{ -1 };
 
     SwapchainInfo swapchain_;
     uint32_t textures_{ 0 };

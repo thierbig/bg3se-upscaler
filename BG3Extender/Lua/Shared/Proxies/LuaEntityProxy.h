@@ -71,16 +71,27 @@ public:
 
 private:
     static UserReturn CreateComponent(lua_State* L, EntityHandle entity, ExtComponentType component);
+    static UserReturn CreateComponentImmediate(lua_State* L, EntityHandle entity, ExtComponentType component);
     static bool RemoveComponent(lua_State* L, EntityHandle entity, ExtComponentType component);
+    static bool RemoveComponentImmediate(lua_State* L, EntityHandle entity, ExtComponentType component);
     static UserReturn GetComponent(lua_State* L, EntityHandle entity, ExtComponentType component);
     static bool HasRawComponent(lua_State* L, EntityHandle entity, STDString componentName);
     static UserReturn GetAllComponents(lua_State* L, EntityHandle entity, std::optional<bool> warnOnMissing);
-    static Array<STDString> GetAllComponentNames(lua_State* L, EntityHandle entity, std::optional<bool> requireMapped);
+    static UserReturn GetChangedComponents(lua_State* L, EntityHandle entity);
+    static UserReturn GetAddedComponentsCurrentFrame(lua_State* L, EntityHandle entity);
+    static Array<ExtComponentType> GetRemovedComponentsCurrentFrame(lua_State* L, EntityHandle entity);
+    static Array<StringView> GetAllComponentNames(lua_State* L, EntityHandle entity, std::optional<bool> requireMapped);
 
     static bool IsAlive(lua_State* L, EntityHandle entity);
     static std::optional<NetId> GetNetId(lua_State* L, EntityHandle entity);
 
     static void Replicate(lua_State* L, EntityHandle entity, ExtComponentType component);
+    static bool MarkChanged(lua_State* L, EntityHandle entity, ExtComponentType component);
+    static bool WasChanged(lua_State* L, EntityHandle entity, ExtComponentType component);
+    static bool WasAdded(lua_State* L, EntityHandle entity, ExtComponentType component);
+    static bool WasRemoved(lua_State* L, EntityHandle entity, ExtComponentType component);
+    static bool WasEntityAdded(lua_State* L, EntityHandle entity);
+    static bool WasEntityRemoved(lua_State* L, EntityHandle entity);
     static void SetReplicationFlags(lua_State* L, EntityHandle entity, ExtComponentType component, uint64_t flags, std::optional<uint32_t> qword);
     static uint64_t GetReplicationFlags(lua_State* L, EntityHandle entity, ExtComponentType component, std::optional<uint32_t> qword);
     
