@@ -202,6 +202,7 @@ public:
         }
 
         vkCreateDeviceHooked(physicalDevice, pCreateInfo, pAllocator, pDevice, result);
+        streamline_.FlushBootLog();
         if (result == VK_SUCCESS) {
             streamline_.LogFeatureSupport(physicalDevice);
         }

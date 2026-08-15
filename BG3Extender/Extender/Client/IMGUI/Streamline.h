@@ -11,15 +11,48 @@
 // activation yet.
 
 #include <External/streamline/include/sl.h>
+#include <cstdarg>
+#include <mutex>
+#include <string>
+#include <vector>
 
 BEGIN_NS(extui)
 
 class StreamlineManager
 {
 public:
+    // The extender's console does not exist yet when Load()/Init() run at startup, and its
+    // logger silently drops messages until it does. Everything is buffered and re-emitted by
+    // FlushBootLog() once the console is alive (first device creation).
+    void Note(char const* fmt, ...)
+    {
+        char buf[1024];
+        va_list args;
+        va_start(args, fmt);
+        _vsnprintf_s(buf, std::size(buf), _TRUNCATE, fmt, args);
+        va_end(args);
+        {
+            std::lock_guard _(bootLogLock_);
+            bootLog_.push_back(buf);
+        }
+        INFO("%s", buf);
+    }
+
+    void FlushBootLog()
+    {
+        std::lock_guard _(bootLogLock_);
+        if (bootLog_.empty()) return;
+        INFO("SL: --- buffered boot log (%u lines) ---", (unsigned)bootLog_.size());
+        for (auto const& line : bootLog_) {
+            INFO("%s", line.c_str());
+        }
+        bootLog_.clear();
+    }
+
     bool Load()
     {
         if (module_ != nullptr) return true;
+        gInstance = this;
 
         // Prefer the Streamline runtime the upscaler package ships; the interposer finds
         // sl.common.dll and the feature plugins next to itself.
@@ -38,7 +71,7 @@ public:
         }
 
         if (module_ == nullptr) {
-            ERR("SL: sl.interposer.dll not found; Streamline disabled");
+            Note("SL: ERROR: sl.interposer.dll not found; Streamline disabled");
             return false;
         }
 
@@ -53,12 +86,12 @@ public:
         vkCreateDeviceProxy_ = reinterpret_cast<PFN_vkCreateDevice>(GetProcAddress(module_, "vkCreateDevice"));
 
         if (!slInit_ || !slIsFeatureSupported_ || !vkCreateInstanceProxy_ || !vkCreateDeviceProxy_) {
-            ERR("SL: sl.interposer.dll is missing expected exports; Streamline disabled");
+            Note("SL: ERROR: sl.interposer.dll is missing expected exports; Streamline disabled");
             module_ = nullptr;
             return false;
         }
 
-        INFO("SL: interposer loaded from %s", streamlineDir_.empty() ? "search path" : "UpscalerBasePlugin\\Streamline");
+        Note("SL: interposer loaded from %s", streamlineDir_.empty() ? "search path" : "UpscalerBasePlugin\\Streamline");
         return true;
     }
 
@@ -88,12 +121,12 @@ public:
 
         auto result = slInit_(pref, sl::kSDKVersion);
         if (result != sl::Result::eOk) {
-            ERR("SL: slInit failed: %d (header SDK %u.%u.%u vs runtime on disk - see SL log lines above)",
+            Note("SL: ERROR: slInit failed: %d (header SDK %u.%u.%u vs runtime on disk - see SL log lines above)",
                 (int)result, SL_VERSION_MAJOR, SL_VERSION_MINOR, SL_VERSION_PATCH);
             return false;
         }
 
-        INFO("SL: slInit ok (SDK headers %u.%u.%u)", SL_VERSION_MAJOR, SL_VERSION_MINOR, SL_VERSION_PATCH);
+        Note("SL: slInit ok (SDK headers %u.%u.%u)", SL_VERSION_MAJOR, SL_VERSION_MINOR, SL_VERSION_PATCH);
         initialized_ = true;
         return true;
     }
@@ -146,16 +179,20 @@ private:
         // SL terminates its messages with a newline; the console adds its own.
         auto len = msg ? strlen(msg) : 0;
         if (len > 0 && msg[len - 1] == '\n') len--;
-        if (type == sl::LogType::eError) {
-            ERR("SL: %.*s", (int)len, msg);
-        } else if (type == sl::LogType::eWarn) {
-            WARN("SL: %.*s", (int)len, msg);
+        char const* prefix = type == sl::LogType::eError ? "SL: ERROR: "
+            : type == sl::LogType::eWarn ? "SL: WARN: " : "SL: ";
+        if (gInstance != nullptr) {
+            gInstance->Note("%s%.*s", prefix, (int)len, msg);
         } else {
-            INFO("SL: %.*s", (int)len, msg);
+            INFO("%s%.*s", prefix, (int)len, msg);
         }
     }
 
+    static inline StreamlineManager* gInstance{ nullptr };
+
     HMODULE module_{ nullptr };
+    std::mutex bootLogLock_;
+    std::vector<std::string> bootLog_;
     std::wstring streamlineDir_;
     bool initialized_{ false };
     bool featureSupportLogged_{ false };
