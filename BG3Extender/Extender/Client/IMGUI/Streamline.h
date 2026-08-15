@@ -2,9 +2,9 @@
 
 // NVIDIA Streamline integration, driven by the extender itself (no third-party injector).
 //
-// The extender loads sl.interposer.dll, initializes Streamline, and routes the game's
-// Vulkan object creation through the interposer so Streamline can add the device
-// extensions and queues its features need. Feature plugins (sl.dlss_g.dll etc.) load
+// Streamline is initialized with eUseManualHooking; the game's own loader calls
+// vkCreateInstance and vkCreateDevice extended with SL's requirements, and handles
+// are handed over via slSetVulkanInfo. Feature plugins (sl.dlss_g.dll etc.) load
 // from the same folder as the interposer.
 //
 // Spike scope: init + feature support reporting only. No frame data, no tags, no FG

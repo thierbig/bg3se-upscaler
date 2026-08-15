@@ -129,8 +129,8 @@ public:
         CreateInstanceHook_.Wrap(ResolveFunctionTrampoline(createInstance));
         DetourTransactionCommit();
 
-        // Instance and device creation are wrapped (not post-hooked) so the game's calls can
-        // be routed through Streamline's interposer; see the *Wrapped methods.
+        // Instance and device creation are wrapped (not post-hooked); Streamline is initialized
+        // at first vkCreateInstance in manual-hooking mode; see the *Wrapped methods.
         CreateInstanceHook_.SetWrapper(&VulkanBackend::vkCreateInstanceWrapped, this);
         CreateDeviceHook_.SetWrapper(&VulkanBackend::vkCreateDeviceWrapped, this);
         DestroyDeviceHook_.SetPreHook(&VulkanBackend::vkDestroyDeviceHooked, this);
@@ -163,7 +163,32 @@ public:
             }
         }
 
-        auto result = orig(pCreateInfo, pAllocator, pInstance);
+        VkResult result;
+        auto const& reqs = streamline_.Requirements();
+        if (streamline_.Ready() && reqs.valid && !reqs.instanceExtensions.empty()) {
+            std::vector<char const*> extensions(
+                pCreateInfo->ppEnabledExtensionNames,
+                pCreateInfo->ppEnabledExtensionNames + pCreateInfo->enabledExtensionCount);
+            for (auto const& wanted : reqs.instanceExtensions) {
+                bool present = false;
+                for (auto existing : extensions) {
+                    if (wanted == existing) { present = true; break; }
+                }
+                if (!present) extensions.push_back(wanted.c_str());
+            }
+            VkInstanceCreateInfo extended = *pCreateInfo;
+            extended.enabledExtensionCount = (uint32_t)extensions.size();
+            extended.ppEnabledExtensionNames = extensions.data();
+            INFO("SL: instance create extended with %u extension(s)",
+                (unsigned)(extensions.size() - pCreateInfo->enabledExtensionCount));
+            result = orig(&extended, pAllocator, pInstance);
+            if (result != VK_SUCCESS) {
+                streamline_.Disable("extended vkCreateInstance failed, retrying vanilla");
+                result = orig(pCreateInfo, pAllocator, pInstance);
+            }
+        } else {
+            result = orig(pCreateInfo, pAllocator, pInstance);
+        }
         vkCreateInstanceHooked(pCreateInfo, pAllocator, pInstance, result);
         return result;
     }
@@ -566,23 +591,25 @@ private:
         // is loaded and GetModuleHandleW finds it whatever folder it came from. Without this we
         // silently fall back to the game's own entry points, bypassing Streamline's swapchain
         // proxy - DLSS upscaling still works, but frame generation never gets injected.
-        if (sl_ == nullptr) {
-            sl_ = GetModuleHandleW(L"sl.interposer.dll");
-            if (sl_ != nullptr) {
-                dlssgPresentFunction_ = reinterpret_cast<PFN_vkQueuePresentKHR>(
-                    GetProcAddress(sl_, "vkQueuePresentKHR"));
-                dlssgCreateSwapchainKHR_ = reinterpret_cast<PFN_vkCreateSwapchainKHR>(
-                    GetProcAddress(sl_, "vkCreateSwapchainKHR"));
+        if (gExtender->GetConfig().StreamlineEnabled) {
+            if (sl_ == nullptr) {
+                sl_ = GetModuleHandleW(L"sl.interposer.dll");
+                if (sl_ != nullptr) {
+                    dlssgPresentFunction_ = reinterpret_cast<PFN_vkQueuePresentKHR>(
+                        GetProcAddress(sl_, "vkQueuePresentKHR"));
+                    dlssgCreateSwapchainKHR_ = reinterpret_cast<PFN_vkCreateSwapchainKHR>(
+                        GetProcAddress(sl_, "vkCreateSwapchainKHR"));
+                }
             }
-        }
 
-        if (dlssgPresentFunction_ != nullptr && dlssgCreateSwapchainKHR_ != nullptr) {
-            INFO("IMGUI: chaining present/swapchain through sl.interposer.dll");
-        } else {
-            WARN("IMGUI: sl.interposer.dll not available at device creation (handle %p, present %p, "
-                "createSwapchain %p); hooking the game's entry points directly - DLSS frame "
-                "generation will not be injected",
-                sl_, dlssgPresentFunction_, dlssgCreateSwapchainKHR_);
+            if (dlssgPresentFunction_ != nullptr && dlssgCreateSwapchainKHR_ != nullptr) {
+                INFO("IMGUI: chaining present/swapchain through sl.interposer.dll");
+            } else {
+                WARN("IMGUI: sl.interposer.dll not available at device creation (handle %p, present %p, "
+                    "createSwapchain %p); hooking the game's entry points directly - DLSS frame "
+                    "generation will not be injected",
+                    sl_, dlssgPresentFunction_, dlssgCreateSwapchainKHR_);
+            }
         }
 
         PFN_vkQueuePresentKHR nextPresent = dlssgPresentFunction_ ? dlssgPresentFunction_ : gameQueuePresentKHR;
