@@ -154,14 +154,14 @@ public:
             if (result == sl::Result::eOk) {
                 sl::FeatureVersion version{};
                 if (slGetFeatureVersion_ != nullptr && slGetFeatureVersion_(feature.id, version) == sl::Result::eOk) {
-                    INFO("SL: %s supported (SL %u.%u.%u, NGX %u.%u.%u)", feature.name,
+                    Note("SL: %s supported (SL %u.%u.%u, NGX %u.%u.%u)", feature.name,
                         version.versionSL.major, version.versionSL.minor, version.versionSL.build,
                         version.versionNGX.major, version.versionNGX.minor, version.versionNGX.build);
                 } else {
-                    INFO("SL: %s supported", feature.name);
+                    Note("SL: %s supported", feature.name);
                 }
             } else {
-                ERR("SL: %s NOT supported: %d", feature.name, (int)result);
+                Note("SL: ERROR: %s NOT supported: %d", feature.name, (int)result);
             }
         }
     }
