@@ -12,6 +12,8 @@
 
 #include <External/streamline/include/sl.h>
 #include <cstdarg>
+#include <cstdio>
+#include <share.h>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -36,6 +38,28 @@ public:
             bootLog_.push_back(buf);
         }
         INFO("%s", buf);
+        AppendToFile(buf);
+    }
+
+    // The console drops output until it exists and the runtime log opens even later, so the
+    // boot sequence also goes to a file of our own next to the game binary. Truncated on the
+    // first write of each session.
+    void AppendToFile(char const* line)
+    {
+        if (logPath_.empty()) {
+            wchar_t path[MAX_PATH]{};
+            if (GetModuleFileNameW(nullptr, path, MAX_PATH) == 0) return;
+            if (auto slash = wcsrchr(path, L'\\')) *slash = L'\0';
+            logPath_ = std::wstring(path) + L"\\SE-Streamline.log";
+        }
+
+        std::lock_guard _(fileLock_);
+        auto file = _wfsopen(logPath_.c_str(), fileTruncated_ ? L"ab" : L"wb", _SH_DENYNO);
+        fileTruncated_ = true;
+        if (file == nullptr) return;
+        fwrite(line, 1, strlen(line), file);
+        fwrite("\r\n", 1, 2, file);
+        fclose(file);
     }
 
     void FlushBootLog()
@@ -196,7 +220,10 @@ private:
 
     HMODULE module_{ nullptr };
     std::mutex bootLogLock_;
+    std::mutex fileLock_;
     std::vector<std::string> bootLog_;
+    std::wstring logPath_;
+    bool fileTruncated_{ false };
     std::wstring streamlineDir_;
     bool initialized_{ false };
     bool featureSupportLogged_{ false };
