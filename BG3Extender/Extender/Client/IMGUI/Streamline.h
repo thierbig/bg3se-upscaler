@@ -221,7 +221,10 @@ public:
         // (interposer + plugins + nvngx_dlssg from the SDK release), and the crash this
         // replaces came precisely from mixing the interposer with newer OTA plugins.
         pref.flags = sl::PreferenceFlags::eDisableCLStateTracking
-            | sl::PreferenceFlags::eUseManualHooking;
+            | sl::PreferenceFlags::eUseManualHooking
+            // Required: we tag depth/mvec per-frame via slSetTagForFrame. Without this flag
+            // slSetTagForFrame returns error 19 and DLSS-G gets no inputs (no frames generated).
+            | sl::PreferenceFlags::eUseFrameBasedResourceTagging;
         pref.featuresToLoad = features;
         pref.numFeaturesToLoad = (uint32_t)std::size(features);
         // 0xE658703: the app id family NVIDIA's driver/NGX on this machine already serves
@@ -528,6 +531,7 @@ public:
             consts.prevClipToClip = ToSLMatrix(glm::inverse(clipToPrevClip));
         }
 
+        consts.cameraPinholeOffset = sl::float2(0.0f, 0.0f);   // no lens shift; SL warns if left invalid
         consts.jitterOffset = sl::float2(in.jitterX, in.jitterY);
         // Raw NGX values, already (-1,-1) per the phase-2a checkpoint (BG3 mvecs negated per axis).
         consts.mvecScale = sl::float2(in.mvScaleX, in.mvScaleY);
