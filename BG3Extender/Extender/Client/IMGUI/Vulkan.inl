@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <vector>
 #include <psapi.h>
+#include <Extender/Client/IMGUI/Streamline.h>
 
 #ifndef NVSDK_CONV
 #ifdef __GNUC__
@@ -100,6 +101,10 @@ END_SE()
 
 BEGIN_NS(extui)
 
+// Set while a call routed into sl.interposer re-enters our loader-level detours; the
+// inner leg must go straight to the original function or we recurse forever.
+static thread_local bool gSLRouteReentry{ false };
+
 class VulkanBackend : public RenderingBackend
 {
 public:
@@ -128,22 +133,79 @@ public:
         CreateInstanceHook_.Wrap(ResolveFunctionTrampoline(createInstance));
         DetourTransactionCommit();
 
-        CreateInstanceHook_.SetPostHook(&VulkanBackend::vkCreateInstanceHooked, this);
-        CreateDeviceHook_.SetPostHook(&VulkanBackend::vkCreateDeviceHooked, this);
+        // Instance and device creation are wrapped (not post-hooked) so the game's calls can
+        // be routed through Streamline's interposer; see the *Wrapped methods.
+        CreateInstanceHook_.SetWrapper(&VulkanBackend::vkCreateInstanceWrapped, this);
+        CreateDeviceHook_.SetWrapper(&VulkanBackend::vkCreateDeviceWrapped, this);
         DestroyDeviceHook_.SetPreHook(&VulkanBackend::vkDestroyDeviceHooked, this);
         CreatePipelineCacheHook_.SetPostHook(&VulkanBackend::vkCreatePipelineCacheHooked, this);
         CreateSwapchainKHRHook_.SetPostHook(&VulkanBackend::vkCreateSwapchainKHRHooked, this);
         DestroySwapchainKHRHook_.SetPreHook(&VulkanBackend::vkDestroySwapchainKHRHooked, this);
         QueuePresentKHRHook_.SetPreHook(&VulkanBackend::vkQueuePresentKHRHooked, this);
-        LoadLibraryW(L"upscaler.dll");
-        sl_ = GetModuleHandleW(L"sl.interposer.dll");
-        if (!sl_) { sl_ = LoadLibraryW(L"sl.interposer.dll"); }
-        if (sl_) {
+
+        // The extender drives Streamline itself; PureDark's upscaler.dll is no longer loaded
+        // on this branch (it was only ever loaded from right here).
+        if (streamline_.Load() && streamline_.Init()) {
+            sl_ = streamline_.Module();
             dlssgPresentFunction_ = reinterpret_cast<PFN_vkQueuePresentKHR>(
                 GetProcAddress(sl_, "vkQueuePresentKHR"));
             dlssgCreateSwapchainKHR_ = reinterpret_cast<PFN_vkCreateSwapchainKHR>(
                 GetProcAddress(sl_, "vkCreateSwapchainKHR"));
         }
+    }
+
+    // The game calls the loader's vkCreateInstance, which we detour. On the outer leg we
+    // forward into the interposer's vkCreateInstance so Streamline can inject what it needs;
+    // the interposer then calls the loader again, re-entering this detour, and that inner leg
+    // must pass straight through to the original.
+    VkResult vkCreateInstanceWrapped(
+        VkCreateInstanceHookType::BaseFuncType* orig,
+        const VkInstanceCreateInfo* pCreateInfo,
+        const VkAllocationCallbacks* pAllocator,
+        VkInstance* pInstance)
+    {
+        if (gSLRouteReentry) return orig(pCreateInfo, pAllocator, pInstance);
+
+        VkResult result;
+        auto proxy = streamline_.CreateInstanceProxy();
+        if (proxy != nullptr) {
+            gSLRouteReentry = true;
+            result = proxy(pCreateInfo, pAllocator, pInstance);
+            gSLRouteReentry = false;
+            INFO("SL: instance creation routed through interposer -> %d", result);
+        } else {
+            result = orig(pCreateInfo, pAllocator, pInstance);
+        }
+
+        vkCreateInstanceHooked(pCreateInfo, pAllocator, pInstance, result);
+        return result;
+    }
+
+    VkResult vkCreateDeviceWrapped(
+        VkCreateDeviceHookType::BaseFuncType* orig,
+        VkPhysicalDevice physicalDevice,
+        const VkDeviceCreateInfo* pCreateInfo,
+        const VkAllocationCallbacks* pAllocator,
+        VkDevice* pDevice)
+    {
+        if (gSLRouteReentry) return orig(physicalDevice, pCreateInfo, pAllocator, pDevice);
+
+        VkResult result;
+        auto proxy = streamline_.CreateDeviceProxy();
+        if (proxy != nullptr) {
+            gSLRouteReentry = true;
+            result = proxy(physicalDevice, pCreateInfo, pAllocator, pDevice);
+            gSLRouteReentry = false;
+            INFO("SL: device creation routed through interposer -> %d", result);
+        } else {
+            result = orig(physicalDevice, pCreateInfo, pAllocator, pDevice);
+        }
+
+        vkCreateDeviceHooked(physicalDevice, pCreateInfo, pAllocator, pDevice, result);
+        if (result == VK_SUCCESS) {
+            streamline_.LogFeatureSupport(physicalDevice);
+        }
+        return result;
     }
 
     void DisableHooks() override
@@ -1442,6 +1504,7 @@ private:
     VkQueuePresentKHRHookType QueuePresentKHRHook_;
     NgxEvaluateFeatureCHookType ngxEvaluateFeatureHook_;
 
+    StreamlineManager streamline_;
     HMODULE sl_{ nullptr };
     PFN_vkQueuePresentKHR dlssgPresentFunction_{ nullptr };
     PFN_vkCreateSwapchainKHR dlssgCreateSwapchainKHR_{ nullptr };

@@ -1,0 +1,174 @@
+#pragma once
+
+// NVIDIA Streamline integration, driven by the extender itself (no third-party injector).
+//
+// The extender loads sl.interposer.dll, initializes Streamline, and routes the game's
+// Vulkan object creation through the interposer so Streamline can add the device
+// extensions and queues its features need. Feature plugins (sl.dlss_g.dll etc.) load
+// from the same folder as the interposer.
+//
+// Spike scope: init + feature support reporting only. No frame data, no tags, no FG
+// activation yet.
+
+#include <External/streamline/include/sl.h>
+
+BEGIN_NS(extui)
+
+class StreamlineManager
+{
+public:
+    bool Load()
+    {
+        if (module_ != nullptr) return true;
+
+        // Prefer the Streamline runtime the upscaler package ships; the interposer finds
+        // sl.common.dll and the feature plugins next to itself.
+        wchar_t path[MAX_PATH]{};
+        if (GetModuleFileNameW(nullptr, path, MAX_PATH) > 0) {
+            if (auto slash = wcsrchr(path, L'\\')) *slash = L'\0';
+            streamlineDir_ = std::wstring(path) + L"\\mods\\UpscalerBasePlugin\\Streamline";
+            auto interposer = streamlineDir_ + L"\\sl.interposer.dll";
+            module_ = LoadLibraryW(interposer.c_str());
+        }
+
+        if (module_ == nullptr) {
+            // Fall back to whatever the search path finds (e.g. a copy next to bin\)
+            module_ = LoadLibraryW(L"sl.interposer.dll");
+            streamlineDir_.clear();
+        }
+
+        if (module_ == nullptr) {
+            ERR("SL: sl.interposer.dll not found; Streamline disabled");
+            return false;
+        }
+
+        slInit_ = GetProc<PFun_slInit>("slInit");
+        slShutdown_ = GetProc<PFun_slShutdown>("slShutdown");
+        slIsFeatureSupported_ = GetProc<PFun_slIsFeatureSupported>("slIsFeatureSupported");
+        slIsFeatureLoaded_ = GetProc<PFun_slIsFeatureLoaded>("slIsFeatureLoaded");
+        slGetFeatureVersion_ = GetProc<PFun_slGetFeatureVersion>("slGetFeatureVersion");
+        slGetFeatureRequirements_ = GetProc<PFun_slGetFeatureRequirements>("slGetFeatureRequirements");
+
+        vkCreateInstanceProxy_ = reinterpret_cast<PFN_vkCreateInstance>(GetProcAddress(module_, "vkCreateInstance"));
+        vkCreateDeviceProxy_ = reinterpret_cast<PFN_vkCreateDevice>(GetProcAddress(module_, "vkCreateDevice"));
+
+        if (!slInit_ || !slIsFeatureSupported_ || !vkCreateInstanceProxy_ || !vkCreateDeviceProxy_) {
+            ERR("SL: sl.interposer.dll is missing expected exports; Streamline disabled");
+            module_ = nullptr;
+            return false;
+        }
+
+        INFO("SL: interposer loaded from %s", streamlineDir_.empty() ? "search path" : "UpscalerBasePlugin\\Streamline");
+        return true;
+    }
+
+    bool Init()
+    {
+        if (initialized_) return true;
+        if (module_ == nullptr) return false;
+
+        static sl::Feature features[] = { sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL };
+        static const wchar_t* pluginPaths[1];
+
+        sl::Preferences pref{};
+        pref.showConsole = false;
+        pref.logLevel = sl::LogLevel::eVerbose;
+        pref.logMessageCallback = &LogCallback;
+        // No OTA: run exactly the plugins on disk, deterministically.
+        pref.flags = sl::PreferenceFlags::eDisableCLStateTracking;
+        pref.featuresToLoad = features;
+        pref.numFeaturesToLoad = (uint32_t)std::size(features);
+        pref.applicationId = 231313132;
+        pref.renderAPI = sl::RenderAPI::eVulkan;
+        if (!streamlineDir_.empty()) {
+            pluginPaths[0] = streamlineDir_.c_str();
+            pref.pathsToPlugins = pluginPaths;
+            pref.numPathsToPlugins = 1;
+        }
+
+        auto result = slInit_(pref, sl::kSDKVersion);
+        if (result != sl::Result::eOk) {
+            ERR("SL: slInit failed: %d (header SDK %u.%u.%u vs runtime on disk - see SL log lines above)",
+                (int)result, SL_VERSION_MAJOR, SL_VERSION_MINOR, SL_VERSION_PATCH);
+            return false;
+        }
+
+        INFO("SL: slInit ok (SDK headers %u.%u.%u)", SL_VERSION_MAJOR, SL_VERSION_MINOR, SL_VERSION_PATCH);
+        initialized_ = true;
+        return true;
+    }
+
+    void LogFeatureSupport(VkPhysicalDevice physicalDevice)
+    {
+        if (!initialized_ || featureSupportLogged_) return;
+        featureSupportLogged_ = true;
+
+        sl::AdapterInfo adapter{};
+        adapter.vkPhysicalDevice = physicalDevice;
+
+        struct { sl::Feature id; char const* name; } const features[] = {
+            { sl::kFeatureDLSS_G, "DLSS-G" },
+            { sl::kFeatureReflex, "Reflex" },
+            { sl::kFeaturePCL, "PCL" },
+        };
+
+        for (auto const& feature : features) {
+            auto result = slIsFeatureSupported_(feature.id, adapter);
+            if (result == sl::Result::eOk) {
+                sl::FeatureVersion version{};
+                if (slGetFeatureVersion_ != nullptr && slGetFeatureVersion_(feature.id, version) == sl::Result::eOk) {
+                    INFO("SL: %s supported (SL %u.%u.%u, NGX %u.%u.%u)", feature.name,
+                        version.versionSL.major, version.versionSL.minor, version.versionSL.build,
+                        version.versionNGX.major, version.versionNGX.minor, version.versionNGX.build);
+                } else {
+                    INFO("SL: %s supported", feature.name);
+                }
+            } else {
+                ERR("SL: %s NOT supported: %d", feature.name, (int)result);
+            }
+        }
+    }
+
+    bool Ready() const { return initialized_; }
+    HMODULE Module() const { return module_; }
+    PFN_vkCreateInstance CreateInstanceProxy() const { return initialized_ ? vkCreateInstanceProxy_ : nullptr; }
+    PFN_vkCreateDevice CreateDeviceProxy() const { return initialized_ ? vkCreateDeviceProxy_ : nullptr; }
+
+private:
+    template <class T>
+    T* GetProc(char const* name)
+    {
+        return reinterpret_cast<T*>(GetProcAddress(module_, name));
+    }
+
+    static void LogCallback(sl::LogType type, char const* msg)
+    {
+        // SL terminates its messages with a newline; the console adds its own.
+        auto len = msg ? strlen(msg) : 0;
+        if (len > 0 && msg[len - 1] == '\n') len--;
+        if (type == sl::LogType::eError) {
+            ERR("SL: %.*s", (int)len, msg);
+        } else if (type == sl::LogType::eWarn) {
+            WARN("SL: %.*s", (int)len, msg);
+        } else {
+            INFO("SL: %.*s", (int)len, msg);
+        }
+    }
+
+    HMODULE module_{ nullptr };
+    std::wstring streamlineDir_;
+    bool initialized_{ false };
+    bool featureSupportLogged_{ false };
+
+    PFun_slInit* slInit_{ nullptr };
+    PFun_slShutdown* slShutdown_{ nullptr };
+    PFun_slIsFeatureSupported* slIsFeatureSupported_{ nullptr };
+    PFun_slIsFeatureLoaded* slIsFeatureLoaded_{ nullptr };
+    PFun_slGetFeatureVersion* slGetFeatureVersion_{ nullptr };
+    PFun_slGetFeatureRequirements* slGetFeatureRequirements_{ nullptr };
+
+    PFN_vkCreateInstance vkCreateInstanceProxy_{ nullptr };
+    PFN_vkCreateDevice vkCreateDeviceProxy_{ nullptr };
+};
+
+END_NS()
