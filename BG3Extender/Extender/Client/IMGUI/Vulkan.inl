@@ -249,6 +249,15 @@ public:
                 savedF13 = std::move(saved);
             }
 
+            // Restore game-owned structs to their original (un-OR'd) state. Must run before any
+            // vanilla fallback retry - otherwise the "vanilla" create-info still carries SL's
+            // feature bits, which can make the fallback fail identically to the extended attempt
+            // it was supposed to rescue. Idempotent, so it is also safe to call again at the end.
+            auto restoreGameFeatures = [&]() {
+                if (gameF12 != nullptr) std::copy(savedF12.begin(), savedF12.end(), (uint8_t*)gameF12);
+                if (gameF13 != nullptr) std::copy(savedF13.begin(), savedF13.end(), (uint8_t*)gameF13);
+            };
+
             VkDeviceCreateInfo extended = *pCreateInfo;
             // Prepend structs the game does not chain (head insertion, no cloning).
             if (gameF12 == nullptr && !reqs.features12.empty()) { slF12.pNext = const_cast<void*>(extended.pNext); extended.pNext = &slF12; }
@@ -314,6 +323,7 @@ public:
 
             if (queueFailure) {
                 streamline_.Disable("required SL queue does not fit family limits");
+                restoreGameFeatures();
                 result = orig(physicalDevice, pCreateInfo, pAllocator, pDevice);
             } else {
                 INFO("SL: device create extended: +%u ext, queues g=%u@%u c=%u@%u ofa=%u@%u",
@@ -324,13 +334,14 @@ public:
                 result = orig(physicalDevice, &extended, pAllocator, pDevice);
                 if (result != VK_SUCCESS) {
                     streamline_.Disable("extended vkCreateDevice failed, retrying vanilla");
+                    restoreGameFeatures();
                     result = orig(physicalDevice, pCreateInfo, pAllocator, pDevice);
                 }
             }
 
-            // Restore game-owned structs regardless of outcome.
-            if (gameF12 != nullptr) std::copy(savedF12.begin(), savedF12.end(), (uint8_t*)gameF12);
-            if (gameF13 != nullptr) std::copy(savedF13.begin(), savedF13.end(), (uint8_t*)gameF13);
+            // Restore game-owned structs regardless of outcome (idempotent; also covers the
+            // extended-success path, which does not go through either retry above).
+            restoreGameFeatures();
         } else {
             result = orig(physicalDevice, pCreateInfo, pAllocator, pDevice);
         }
