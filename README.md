@@ -1,4 +1,16 @@
-# Norbyte's Baldur's Gate 3 Script Extender
+# Norbyte's Baldur's Gate 3 Script Extender (fork, archived)
+
+> ## IMPORTANT: this fork is archived. For DLSS Frame Generation on Vulkan, use bg3fgvk.
+>
+> This repository was a fork of the Script Extender modified for the PureDark upscaler
+> compatibility experiments behind [BG3UpscalerProxy](https://github.com/thierbig/BG3UpscalerProxy).
+> That approach is superseded by **[bg3fgvk](https://github.com/thierbig/bg3fgvk)**
+> ([Nexus Mods](https://www.nexusmods.com/baldursgate3/mods/24804)): free, open-source DLSS Frame
+> Generation (x2 / x3 / x4) for Baldur's Gate 3 on Vulkan that works with **Norbyte's stock Script
+> Extender and MCM**, so no modified extender is needed any more.
+>
+> For the Script Extender itself, use the upstream project: [Norbyte/bg3se](https://github.com/Norbyte/bg3se).
+> Everything below is the upstream README, kept for reference.
 
 [Downloads available here](https://github.com/Norbyte/bg3se/releases)
 
